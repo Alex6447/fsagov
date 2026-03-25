@@ -36,9 +36,7 @@ class ShowcaseRecord(BaseModel):
     okved_nsi_name: Optional[str] = Field(None, alias="okvedNsiName")
     is_government_company: Optional[bool] = Field(None, alias="isGovernmentCompany")
     is_foreign_organization: Optional[bool] = Field(None, alias="isForeignOrganization")
-    insert_national_part_name: Optional[str] = Field(
-        None, alias="insertNationalPartName"
-    )
+    insert_national_part_name: Optional[str] = Field(None, alias="insertNationalPartName")
 
     class Config:
         populate_by_name = True

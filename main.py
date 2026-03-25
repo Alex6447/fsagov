@@ -1,99 +1,167 @@
-from loguru import logger
 import sys
-import json
-from pathlib import Path
-from tqdm import tqdm
+import time
+from loguru import logger
 
-from parser import RosreestrAPIClient, Database
-from config import PAGE_SIZE, DELAY_BETWEEN_REQUESTS, DB_PATH
-
-
-logger.add('logs\\log.log', level="DEBUG")
-
-STATE_FILE = Path("data/parser_state.json")
+from src.utils.api_tools import RosreestrAPIClient, FilterBuilder
+from src.utils.db_tools import Database
+from src.utils.xlsx_tools import XLSXExporter
+from src.utils.log_tools import setup_logging
+from config import PAGE_SIZE, MAX_PAGES_BEFORE_FILTER
 
 
-def save_state(page: int):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        json.dump({"last_page": page}, f)
+setup_logging()
 
 
-def load_state() -> int:
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-                return data.get("last_page", 0)
-        except Exception:
-            pass
-    return 0
+def _fetch_direction(
+    client: RosreestrAPIClient,
+    db: Database,
+    sort_dir: str,
+    existing_ids: set,
+    filters: dict,
+) -> tuple[int, int]:
+    """Выполняет пагинацию в одном направлении сортировки.
+    Возвращает (fetched, inserted)."""
+    fetched = inserted = page = 0
+    while page < 20:  # API ограничивает 20 страниц в одном направлении
+        offset = page * PAGE_SIZE
+        data = client.fetch_page(offset, PAGE_SIZE, sort_dir=sort_dir, filters=filters)
+        if not data:
+            logger.warning(f"Failed to fetch offset={offset} sort={sort_dir}, skipping")
+            break
+
+        items = data.get("items", [])
+        if not items:
+            break
+
+        new_items = [r for r in items if r.get("id") not in existing_ids]
+        if new_items:
+            n = db.insert_batch(new_items)
+            inserted += n
+            existing_ids.update(r.get("id") for r in new_items)
+
+        fetched += len(items)
+
+        if len(items) < PAGE_SIZE:
+            break
+        page += 1
+
+    return fetched, inserted
+
+
+def run_parse(
+    client: RosreestrAPIClient,
+    db: Database,
+    filters: dict = None,
+    depth: int = 0,
+) -> tuple[int, int]:
+    """Рекурсивно парсит с автоматическим сплитом по регионам при > MAX_PAGES_BEFORE_FILTER.
+    Возвращает (total_fetched, total_inserted)."""
+    total_pages = client.get_page_count(filters)
+    label = f"filters={filters}" if filters else "no filters"
+    logger.info(f"[depth={depth}] {label}: total_pages={total_pages}")
+
+    # Мод 3+4: слишком много страниц → сплит по регионам
+    if total_pages > MAX_PAGES_BEFORE_FILTER and depth == 0:
+        logger.info("Too many pages, splitting by federal district/region...")
+
+        districts = db.get_districts()
+        if not districts:
+            districts = client.fetch_federal_districts()
+            if districts:
+                db.upsert_districts(districts)
+
+        if not districts:
+            logger.warning("No districts available, proceeding without split")
+        else:
+            total_f = total_i = 0
+            for district in districts:
+                regions = db.get_regions(district["id"])
+                if not regions:
+                    regions = client.fetch_regions(district["id"])
+                    if regions:
+                        db.upsert_regions(regions, district["id"])
+
+                for region in regions:
+                    region_filter = FilterBuilder().with_region([region["id"]]).build()
+                    f, i = run_parse(client, db, filters=region_filter, depth=depth + 1)
+                    total_f += f
+                    total_i += i
+            return total_f, total_i
+
+    existing_ids = set(db.get_all_ids())
+    total_fetched = total_inserted = 0
+
+    # Мод 4: обход лимита — два направления
+    directions = ["desc", "asc"] if total_pages > 20 else ["desc"]
+    for direction in directions:
+        f, i = _fetch_direction(client, db, direction, existing_ids, filters)
+        total_fetched += f
+        total_inserted += i
+        logger.info(f"Direction '{direction}': fetched={f}, inserted={i}")
+
+    return total_fetched, total_inserted
+
+
+def fetch_extended_data(client: RosreestrAPIClient, db: Database):
+    """Мод 6: загружает расширенные данные для записей без деталей."""
+    ids = db.get_ids_without_details()
+    if not ids:
+        logger.info("All records already have details")
+        return
+
+    logger.info(f"Fetching details for {len(ids)} records...")
+    for i, record_id in enumerate(ids, start=1):
+        raw = client.fetch_details(record_id)
+        if raw:
+            details = client.enrich_details(raw)
+            db.upsert_details(record_id, details)
+        if i % 100 == 0:
+            logger.info(f"Details progress: {i}/{len(ids)}")
 
 
 def main():
-    logger.info("Starting Росреестр parser")
+    logger.info("Starting FSA parser")
+    start_time = time.time()
+    total_errors = 0
 
     client = RosreestrAPIClient()
     db = Database()
-
-    logger.info("Initializing database")
     db.init_db()
 
-    current_count = db.get_count()
-    logger.info(f"Current records in DB: {current_count}")
+    logger.info(f"Records in DB: {db.get_count()}")
 
-    total = client.get_total()
-    if not total:
-        logger.error("Failed to get total records count")
-        return
+    # Основной парсинг
+    try:
+        total_fetched, total_inserted = run_parse(client, db)
+        logger.info(f"Parsing done: fetched={total_fetched}, inserted={total_inserted}")
+    except Exception as e:
+        logger.error(f"Parsing failed: {e}")
+        total_fetched = total_inserted = 0
+        total_errors += 1
 
-    logger.info(f"Total records to fetch: {total}")
+    # Мод 6: расширенные данные
+    try:
+        fetch_extended_data(client, db)
+    except Exception as e:
+        logger.error(f"Extended data fetch failed: {e}")
+        total_errors += 1
 
-    if current_count >= total:
-        logger.info("Database is up to date")
-        db.close()
-        return
+    # Мод 7: сохранить метрики
+    duration = time.time() - start_time
+    db.save_metrics(
+        duration_sec=duration,
+        total_fetched=total_fetched,
+        total_inserted=total_inserted,
+        total_errors=total_errors,
+    )
 
-    start_page = load_state()
-    logger.info(f"Resuming from page: {start_page}")
+    # Мод 5: экспорт в XLSX
+    logger.info("Exporting to XLSX...")
+    records = db.get_all_records()
+    exporter = XLSXExporter("data/export.xlsx")
+    exporter.export(records)
 
-    remaining = total - current_count
-    pages = (remaining + PAGE_SIZE - 1) // PAGE_SIZE
-    logger.info(f"Pages to fetch: {pages}")
-
-    with tqdm(total=remaining, desc="Fetching records") as pbar:
-        page = start_page
-        while True:
-            logger.debug(f"{page=}")
-            data = client.fetch_by_page(page)
-            if not data:
-                logger.warning(f"Failed to fetch page {page}, waiting and retrying...")
-                import time
-
-                time.sleep(30)
-                continue
-
-            items = data.get("items", [])
-            if not items:
-                break
-
-            db.insert_batch(items)
-            pbar.update(len(items))
-
-            logger.info(
-                f"Page {page}: fetched {len(items)} records, total: {db.get_count()}"
-            )
-
-            save_state(page)
-
-            if len(items) < PAGE_SIZE:
-                break
-
-            page += 1
-
-    STATE_FILE.unlink(missing_ok=True)
-    final_count = db.get_count()
-    logger.info(f"Finished. Total records in DB: {final_count}")
+    logger.info(f"Done. Total records in DB: {db.get_count()}, duration: {duration:.1f}s")
     db.close()
 
 
