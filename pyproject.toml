@@ -1,0 +1,18 @@
+[project]
+name = "fsagov-parser"
+version = "0.1.0"
+description = "Парсер данных Росреестра с pub.fsa.gov.ru"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31.0",
+    "pydantic>=2.5.0",
+    "tqdm>=4.66.0",
+    "loguru>=0.7.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["parser"]
