@@ -1,4 +1,16 @@
+import json
+import os
 from pathlib import Path
+
+DEFAULT_BEARER_TOKEN = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJGQVUgTklBIiwic3ViIjoiYW5vbnltb3VzIiwiZXhwIjoxNzc0NDY5MDU5LCJpYXQiOjE3NzQ0NDAyNTl9.6l0MvCc8_8KN2FH0mB8GIpoy0Z16PBBji3CVyz4TlJPEyoVGARLCdBrHOQi-NKKxfir5ygvCu8nQJm70t-wwAg"
+
+CONFIG_FILE = Path("config.json")
+if CONFIG_FILE.exists():
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        user_config = json.load(f)
+        BEARER_TOKEN = user_config.get("fgis_token", DEFAULT_BEARER_TOKEN)
+else:
+    BEARER_TOKEN = DEFAULT_BEARER_TOKEN
 
 # Основной API
 API_URL = "https://pub.fsa.gov.ru/api/v1/ral/common/showcases/get"
@@ -9,8 +21,8 @@ SESSION_URL = "https://pub.fsa.gov.ru/ral"
 # Мод 2: справочник округов / регионов
 NSI_URL = "https://pub.fsa.gov.ru/nsi/api/tree/federalDistrictsAndSubjects/get"
 
-# Мод 6: детальная карточка записи
-DETAILS_URL = "https://pub.fsa.gov.ru/api/v1/ral/common/showcases/{id}"
+# Мод 6: детальная карточка записи (компании)
+DETAILS_URL = "https://pub.fsa.gov.ru/api/v1/ral/common/companies/{id}"
 
 TIMEOUT = 30
 RETRY_MAX = 3

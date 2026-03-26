@@ -47,6 +47,7 @@ class Database:
                 full_name TEXT,
                 address TEXT,
                 federal_district TEXT,
+                region TEXT,
                 fa_country TEXT,
                 fa_name TEXT,
                 fa_name_eng TEXT,
@@ -68,6 +69,9 @@ class Database:
                 is_government_company INTEGER,
                 is_foreign_organization INTEGER,
                 insert_national_part_name TEXT,
+                phones TEXT,
+                emails TEXT,
+                head_person_fio TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -80,21 +84,6 @@ class Database:
         """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_id_status ON showcases(id_status)
-        """)
-
-        # Мод 6: расширенные данные по записи
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS showcase_details (
-                id INTEGER PRIMARY KEY,
-                phones TEXT,
-                emails TEXT,
-                head_full_name TEXT,
-                head_inn TEXT,
-                head_position TEXT,
-                status_history TEXT,
-                raw_json TEXT,
-                fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
         """)
 
         # Мод 2: справочник округов и регионов
@@ -141,15 +130,39 @@ class Database:
         cursor = self.conn.cursor()
 
         columns = [
-            "id", "id_type", "name_type", "id_status", "name_status",
-            "name_type_activity", "ids_type_activity", "reg_number", "reg_date",
-            "full_name", "address", "federal_district", "fa_country", "fa_name",
-            "fa_name_eng", "solution_number", "unique_register_number",
-            "fa_id_status", "has_eng_version", "full_name_eng", "short_name_eng",
-            "head_full_name_eng", "address_eng", "applicant_full_name_eng",
-            "applicant_inn", "applicant_full_name", "oa_description",
-            "oa_description_eng", "combined_sign_id", "okved_nsi_name",
-            "is_government_company", "is_foreign_organization",
+            "id",
+            "region",
+            "id_type",
+            "name_type",
+            "id_status",
+            "name_status",
+            "name_type_activity",
+            "ids_type_activity",
+            "reg_number",
+            "reg_date",
+            "full_name",
+            "address",
+            "federal_district",
+            "fa_country",
+            "fa_name",
+            "fa_name_eng",
+            "solution_number",
+            "unique_register_number",
+            "fa_id_status",
+            "has_eng_version",
+            "full_name_eng",
+            "short_name_eng",
+            "head_full_name_eng",
+            "address_eng",
+            "applicant_full_name_eng",
+            "applicant_inn",
+            "applicant_full_name",
+            "oa_description",
+            "oa_description_eng",
+            "combined_sign_id",
+            "okved_nsi_name",
+            "is_government_company",
+            "is_foreign_organization",
             "insert_national_part_name",
         ]
 
@@ -172,19 +185,36 @@ class Database:
                 return None
 
             data = (
-                r.get("id"), r.get("idType"), r.get("nameType"),
-                r.get("idStatus"), r.get("nameStatus"),
-                r.get("nameTypeActivity"), r.get("idsTypeActivity"),
-                r.get("regNumber"), reg_date, r.get("fullName"),
-                r.get("address"), r.get("federalDistrict"),
-                r.get("faCountry"), r.get("faName"), r.get("faNameEng"),
-                r.get("solutionNumber"), r.get("uniqueRegisterNumber"),
-                r.get("faIdStatus"), bool_int(r.get("hasEngVersion")),
-                r.get("fullNameEng"), r.get("shortNameEng"),
-                r.get("headFullNameEng"), r.get("addressEng"),
-                r.get("applicantFullNameEng"), r.get("applicantInn"),
-                r.get("applicantFullName"), r.get("oaDescription"),
-                r.get("oaDescriptionEng"), r.get("combinedSignId"),
+                r.get("id"),
+                r.get("region"),  # название региона
+                r.get("idType"),
+                r.get("nameType"),
+                r.get("idStatus"),
+                r.get("nameStatus"),
+                r.get("nameTypeActivity"),
+                r.get("idsTypeActivity"),
+                r.get("regNumber"),
+                reg_date,
+                r.get("fullName"),
+                r.get("address"),
+                r.get("federalDistrict"),
+                r.get("faCountry"),
+                r.get("faName"),
+                r.get("faNameEng"),
+                r.get("solutionNumber"),
+                r.get("uniqueRegisterNumber"),
+                r.get("faIdStatus"),
+                bool_int(r.get("hasEngVersion")),
+                r.get("fullNameEng"),
+                r.get("shortNameEng"),
+                r.get("headFullNameEng"),
+                r.get("addressEng"),
+                r.get("applicantFullNameEng"),
+                r.get("applicantInn"),
+                r.get("applicantFullName"),
+                r.get("oaDescription"),
+                r.get("oaDescriptionEng"),
+                r.get("combinedSignId"),
                 r.get("okvedNsiName"),
                 bool_int(r.get("isGovernmentCompany")),
                 bool_int(r.get("isForeignOrganization")),
@@ -221,11 +251,7 @@ class Database:
     def get_all_records(self) -> List[dict]:
         self.connect()
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT s.*, d.phones, d.emails, d.head_full_name
-            FROM showcases s
-            LEFT JOIN showcase_details d ON s.id = d.id
-        """)
+        cursor.execute("SELECT * FROM showcases")
         result = [dict(row) for row in cursor.fetchall()]
         self.close()
         return result
@@ -233,33 +259,51 @@ class Database:
     # ── showcase_details (Мод 6) ───────────────────────────────────────────
 
     def upsert_details(self, record_id: int, details: dict):
-        import json
+        phones = details.get("phones", [])
+        emails = details.get("emails", [])
+
+        phone = phones[0] if phones else None
+        email = emails[0] if emails else None
+
         self.connect()
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO showcase_details
-                (id, phones, emails, head_full_name, head_inn, head_position,
-                 status_history, raw_json, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (
-            record_id,
-            json.dumps(details.get("phones", []), ensure_ascii=False),
-            json.dumps(details.get("emails", []), ensure_ascii=False),
-            details.get("headFullName"),
-            details.get("headInn"),
-            details.get("headPosition"),
-            json.dumps(details.get("statusHistory", []), ensure_ascii=False),
-            json.dumps(details, ensure_ascii=False),
-        ))
+
+        cursor.execute(
+            """
+            UPDATE showcases SET
+                phones = ?,
+                emails = ?,
+                head_person_fio = ?
+            WHERE id = ?
+        """,
+            (
+                phone,
+                email,
+                details.get("headFullName"),
+                record_id,
+            ),
+        )
+
+        self._commit_and_close()
+
+    def update_region_batch(self, record_ids: List[int], region: str):
+        if not record_ids:
+            return
+        self.connect()
+        cursor = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(record_ids))
+        cursor.execute(
+            f"UPDATE showcases SET region = ? WHERE id IN ({placeholders})",
+            [region] + record_ids,
+        )
         self._commit_and_close()
 
     def get_ids_without_details(self) -> List[int]:
         self.connect()
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT s.id FROM showcases s
-            LEFT JOIN showcase_details d ON s.id = d.id
-            WHERE d.id IS NULL
+            SELECT id FROM showcases
+            WHERE phones IS NULL OR phones = '' OR phones = '[]'
         """)
         result = [row[0] for row in cursor.fetchall()]
         self.close()
@@ -271,10 +315,13 @@ class Database:
         self.connect()
         cursor = self.conn.cursor()
         for d in districts:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR REPLACE INTO nsi_districts (id, name, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
-            """, (d.get("id") or d.get("dicId"), d.get("name")))
+            """,
+                (d.get("id") or d.get("dicId"), d.get("name")),
+            )
         self._commit_and_close()
         logger.info(f"Saved {len(districts)} districts")
 
@@ -282,10 +329,15 @@ class Database:
         self.connect()
         cursor = self.conn.cursor()
         for r in regions:
-            cursor.execute("""
-                INSERT OR REPLACE INTO nsi_regions (id, name, district_id, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            """, (r.get("id") or r.get("dicId"), r.get("name"), district_id))
+            # Используем masterId для API фильтров
+            region_id = r.get("masterId") or r.get("FDM-55849") or r.get("id")
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO nsi_regions (id, name, district_id, master_id, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+                (r.get("id") or r.get("dicId"), r.get("name"), district_id, region_id),
+            )
         self._commit_and_close()
         logger.info(f"Saved {len(regions)} regions for district {district_id}")
 
@@ -301,9 +353,24 @@ class Database:
         self.connect()
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, name FROM nsi_regions WHERE district_id = ?", (district_id,)
+            "SELECT id, name, master_id FROM nsi_regions WHERE district_id = ?",
+            (district_id,),
         )
-        result = [{"id": row["id"], "name": row["name"]} for row in cursor.fetchall()]
+        result = [
+            {"id": row["id"], "name": row["name"], "masterId": row["master_id"]}
+            for row in cursor.fetchall()
+        ]
+        self.close()
+        return result
+
+    def get_all_regions(self) -> List[dict]:
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, master_id, district_id FROM nsi_regions")
+        result = [
+            {"id": row["id"], "name": row["name"], "masterId": row["master_id"]}
+            for row in cursor.fetchall()
+        ]
         self.close()
         return result
 
@@ -319,9 +386,12 @@ class Database:
     ):
         self.connect()
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO run_metrics
                 (duration_sec, total_fetched, total_inserted, total_errors, filters_used)
             VALUES (?, ?, ?, ?, ?)
-        """, (duration_sec, total_fetched, total_inserted, total_errors, filters_used))
+        """,
+            (duration_sec, total_fetched, total_inserted, total_errors, filters_used),
+        )
         self._commit_and_close()

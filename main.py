@@ -1,37 +1,61 @@
-import sys
 import time
+from typing import Optional
+
 from loguru import logger
 
+from config import PAGE_SIZE
 from src.utils.api_tools import RosreestrAPIClient, FilterBuilder
 from src.utils.db_tools import Database
 from src.utils.xlsx_tools import XLSXExporter
 from src.utils.log_tools import setup_logging
-from config import PAGE_SIZE, MAX_PAGES_BEFORE_FILTER
+
+MAXPAGES = 20  # Лимит страниц на один запрос (API ограничивает 20)
 
 
 setup_logging()
 
 
-def _fetch_direction(
+def get_page_count(client: RosreestrAPIClient, filters: dict = None) -> int:
+    data = client.fetch_page(0, 1, filters=filters)
+    if data:
+        total = data.get("total", 0)
+        return (total + PAGE_SIZE - 1) // PAGE_SIZE
+    return 0
+
+
+def fetch_and_insert(
     client: RosreestrAPIClient,
     db: Database,
-    sort_dir: str,
-    existing_ids: set,
     filters: dict,
+    existing_ids: set,
+    sort_dir: str = "desc",
+    max_pages: int = 20,
+    region_name: str = None,
 ) -> tuple[int, int]:
-    """Выполняет пагинацию в одном направлении сортировки.
+    """Получить данные и вставить в БД.
     Возвращает (fetched, inserted)."""
-    fetched = inserted = page = 0
-    while page < 20:  # API ограничивает 20 страниц в одном направлении
-        offset = page * PAGE_SIZE
-        data = client.fetch_page(offset, PAGE_SIZE, sort_dir=sort_dir, filters=filters)
+    fetched = inserted = 0
+    total = 0
+
+    for page in range(max_pages):
+        data = client.fetch_page(page, PAGE_SIZE, sort_dir=sort_dir, filters=filters)
         if not data:
-            logger.warning(f"Failed to fetch offset={offset} sort={sort_dir}, skipping")
+            logger.warning(f"Failed to fetch page={page} sort={sort_dir}")
             break
 
         items = data.get("items", [])
         if not items:
             break
+
+        if total == 0:
+            total = data.get("total", 0)
+
+        # Добавляем region во ВСЕ записи
+        if region_name:
+            for item in items:
+                item["region"] = region_name
+            # Обновляем region для всех записей на странице
+            db.update_region_batch([r.get("id") for r in items], region_name)
 
         new_items = [r for r in items if r.get("id") not in existing_ids]
         if new_items:
@@ -39,31 +63,54 @@ def _fetch_direction(
             inserted += n
             existing_ids.update(r.get("id") for r in new_items)
 
+        # Обогащаем ВСЕ записи со страницы (включая старые) - данные могут измениться
+        for item in items:
+            record_id = item.get("id")
+            raw = client.fetch_details(record_id)
+            if raw:
+                details = client.enrich_details(raw)
+                db.upsert_details(record_id, details)
+            time.sleep(0.5)  # пауза между запросами обогащения
+
         fetched += len(items)
 
-        if len(items) < PAGE_SIZE:
+        if fetched >= total:
+            logger.info(f"  Fetched all {total} records")
             break
-        page += 1
 
+    logger.info(f"  {sort_dir}: fetched={fetched}, inserted={inserted}")
     return fetched, inserted
 
 
-def run_parse(
+def parse_with_filters(
     client: RosreestrAPIClient,
     db: Database,
-    filters: dict = None,
+    filters: dict,
+    existing_ids: set,
     depth: int = 0,
+    label: str = "",
+    region_name: str = None,
 ) -> tuple[int, int]:
-    """Рекурсивно парсит с автоматическим сплитом по регионам при > MAX_PAGES_BEFORE_FILTER.
-    Возвращает (total_fetched, total_inserted)."""
-    total_pages = client.get_page_count(filters)
-    label = f"filters={filters}" if filters else "no filters"
-    logger.info(f"[depth={depth}] {label}: total_pages={total_pages}")
+    """Основная функция парсинга по логике из документа.
 
-    # Мод 3+4: слишком много страниц → сплит по регионам
-    if total_pages > MAX_PAGES_BEFORE_FILTER and depth == 0:
-        logger.info("Too many pages, splitting by federal district/region...")
+    Логика:
+    1. Получаем count_pages для текущих фильтров
+    2. Если count_pages > MAXPAGES * 2:
+       - Добавляем следующий уровень фильтрации (регион -> статус -> гос)
+    3. Иначе:
+       - Парсим до 20 страниц (desc)
+       - Если count_pages > MAXPAGES * 2/2:
+          - Инвертируем сортировку (asc) и парсим до пересечения с БД
+    """
+    count_pages = get_page_count(client, filters)
+    current_label = label or "all"
+    logger.info(f"=== CHECK: {current_label} -> pages={count_pages} ===")
 
+    total_fetched = total_inserted = 0
+
+    # Уровень 0: фильтр по городу (region) - сначала собираем все регионы
+    if depth == 0:
+        # Получаем/создаём округа
         districts = db.get_districts()
         if not districts:
             districts = client.fetch_federal_districts()
@@ -71,35 +118,236 @@ def run_parse(
                 db.upsert_districts(districts)
 
         if not districts:
-            logger.warning("No districts available, proceeding without split")
-        else:
-            total_f = total_i = 0
+            logger.warning("No districts available")
+            return 0, 0
+
+        # Собираем все регионы для всех округов (один раз)
+        for district in districts:
+            regions = db.get_regions(district["id"])
+            if not regions:
+                regions = client.fetch_regions(district["id"])
+                if regions:
+                    db.upsert_regions(regions, district["id"])
+                # Небольшая пауза между запросами округов
+                time.sleep(1)
+
+        # Теперь перебираем все регионы
+        all_regions = db.get_all_regions() if hasattr(db, "get_all_regions") else []
+        if not all_regions:
             for district in districts:
                 regions = db.get_regions(district["id"])
-                if not regions:
-                    regions = client.fetch_regions(district["id"])
-                    if regions:
-                        db.upsert_regions(regions, district["id"])
+                all_regions.extend(regions)
 
-                for region in regions:
-                    region_filter = FilterBuilder().with_region([region["id"]]).build()
-                    f, i = run_parse(client, db, filters=region_filter, depth=depth + 1)
-                    total_f += f
-                    total_i += i
-            return total_f, total_i
+        logger.info(f"Total regions: {len(all_regions)}")
 
-    existing_ids = set(db.get_all_ids())
-    total_fetched = total_inserted = 0
+        for region in all_regions:
+            region_id = (
+                region.get("masterId") or region.get("FDM-55849") or region["id"]
+            )
+            region_name = region.get("name", region_id)
 
-    # Мод 4: обход лимита — два направления
-    directions = ["desc", "asc"] if total_pages > 20 else ["desc"]
-    for direction in directions:
-        f, i = _fetch_direction(client, db, direction, existing_ids, filters)
+            region_filter = FilterBuilder().with_region([region_id]).build()
+            f, i = parse_with_filters(
+                client,
+                db,
+                region_filter,
+                existing_ids,
+                depth=1,
+                label=f"region={region_name}",
+                region_name=region_name,
+            )
+            total_fetched += f
+            total_inserted += i
+
+        return total_fetched, total_inserted
+
+    # Уровень 1: фильтр по статусу (если страниц > MAXPAGES * 2)
+    if depth == 1 and count_pages > MAXPAGES * 2:
+        logger.info(
+            f">>> SPLIT: {count_pages} > {MAXPAGES * 2} -> adding STATUS filter"
+        )
+
+        statuses = get_statuses(client)
+        for status_id, status_name in statuses:
+            status_filter = {**filters}
+            status_filter["idStatus"] = [status_id]
+
+            f, i = parse_with_filters(
+                client,
+                db,
+                status_filter,
+                existing_ids,
+                depth=2,
+                label=f"status={status_name}",
+                region_name=region_name,
+            )
+            total_fetched += f
+            total_inserted += i
+
+        return total_fetched, total_inserted
+
+    # Уровень 1: фильтр по статусу (если страниц > MAXPAGES * 2)
+    if depth == 1 and count_pages > MAXPAGES * 2:
+        logger.info(
+            f">>> SPLIT: {count_pages} > {MAXPAGES * 2} -> adding STATUS filter"
+        )
+
+        statuses = get_statuses(client)
+        for status_id, status_name in statuses:
+            status_filter = {**filters}
+            status_filter["idStatus"] = [status_id]
+
+            f, i = parse_with_filters(
+                client,
+                db,
+                status_filter,
+                existing_ids,
+                depth=2,
+                label=f"status={status_name}",
+                region_name=region_name,
+            )
+            total_fetched += f
+            total_inserted += i
+
+        return total_fetched, total_inserted
+
+    # Уровень 2: фильтр по гос-компании (если страниц > MAXPAGES * 2)
+    if depth == 2 and count_pages > MAXPAGES * 2:
+        logger.info(f">>> SPLIT: {count_pages} > {MAXPAGES * 2} -> adding GOV filter")
+
+        for is_gov in [True, False]:
+            gov_filter = {**filters}
+            gov_filter["isGovernmentCompany"] = [is_gov]
+            gov_label = "gov" if is_gov else "private"
+
+            f, i = parse_with_filters(
+                client,
+                db,
+                gov_filter,
+                existing_ids,
+                depth=3,
+                label=f"{gov_label}",
+                region_name=region_name,
+            )
+            total_fetched += f
+            total_inserted += i
+
+        return total_fetched, total_inserted
+
+    # Уровень 2: фильтр по гос-компании (если страниц > MAXPAGES * 2)
+    if depth == 2 and count_pages > MAXPAGES * 2:
+        logger.info(f">>> SPLIT: {count_pages} > {MAXPAGES * 2} -> adding GOV filter")
+
+        for is_gov in [True, False]:
+            gov_filter = {**filters}
+            gov_filter["isGovernmentCompany"] = [is_gov]
+            gov_label = "gov" if is_gov else "private"
+
+            f, i = parse_with_filters(
+                client,
+                db,
+                gov_filter,
+                existing_ids,
+                depth=3,
+                label=f"{gov_label}",
+            )
+            total_fetched += f
+            total_inserted += i
+
+        return total_fetched, total_inserted
+
+    # Уровень 3 или финальный: парсим данные
+    logger.info(f">>> PARSING: {count_pages} pages (max 20 per direction)")
+
+    f, i = fetch_and_insert(
+        client,
+        db,
+        filters,
+        existing_ids,
+        sort_dir="desc",
+        max_pages=20,
+        region_name=region_name,
+    )
+    total_fetched += f
+    total_inserted += i
+
+    # Если страниц больше MAXPAGES - парсим в обратную сторону
+    if count_pages > MAXPAGES:
+        logger.info(f">>> REVERSE: {count_pages} > {MAXPAGES} -> parsing asc direction")
+        f, i = fetch_and_insert(
+            client,
+            db,
+            filters,
+            existing_ids,
+            sort_dir="asc",
+            max_pages=20,
+            region_name=region_name,
+        )
         total_fetched += f
         total_inserted += i
-        logger.info(f"Direction '{direction}': fetched={f}, inserted={i}")
 
     return total_fetched, total_inserted
+
+
+def get_statuses(client: RosreestrAPIClient) -> list:
+    """Список статусов: 1-Архивный, 6-Действует, 14-Прекращен, 15-Приостановлен, 19-Частично приостановлен"""
+    full_status_list = [
+        (1, "Архивный"),
+        (6, "Действует"),
+        (14, "Прекращен"),
+        (15, "Приостановлен"),
+        (19, "Частично приостановлен"),
+    ]
+    logger.info(f"Using statuses: {full_status_list}")
+    return full_status_list
+
+
+def main():
+    logger.info("Starting FSA parser")
+    start_time = time.time()
+    total_errors = 0
+
+    client = RosreestrAPIClient()
+    db = Database()
+    db.init_db()
+
+    logger.info(f"Records in DB: {db.get_count()}")
+
+    existing_ids = set(db.get_all_ids())
+
+    try:
+        total_fetched, total_inserted = parse_with_filters(
+            client, db, {}, existing_ids, depth=0
+        )
+        logger.info(f"Parsing done: fetched={total_fetched}, inserted={total_inserted}")
+    except Exception as e:
+        logger.error(f"Parsing failed: {e}")
+        total_fetched = total_inserted = 0
+        total_errors += 1
+
+    try:
+        fetch_extended_data(client, db)
+    except Exception as e:
+        logger.error(f"Extended data fetch failed: {e}")
+        total_errors += 1
+
+    duration = time.time() - start_time
+    db.save_metrics(
+        duration_sec=duration,
+        total_fetched=total_fetched,
+        total_inserted=total_inserted,
+        total_errors=total_errors,
+    )
+
+    logger.info("Exporting to XLSX...")
+    records = db.get_all_records()
+    exporter = XLSXExporter("data/export.xlsx")
+    exporter.export(records)
+
+    logger.info(
+        f"Done. Total records in DB: {db.get_count()}, duration: {duration:.1f}s"
+    )
+    db.close()
 
 
 def fetch_extended_data(client: RosreestrAPIClient, db: Database):
@@ -117,52 +365,6 @@ def fetch_extended_data(client: RosreestrAPIClient, db: Database):
             db.upsert_details(record_id, details)
         if i % 100 == 0:
             logger.info(f"Details progress: {i}/{len(ids)}")
-
-
-def main():
-    logger.info("Starting FSA parser")
-    start_time = time.time()
-    total_errors = 0
-
-    client = RosreestrAPIClient()
-    db = Database()
-    db.init_db()
-
-    logger.info(f"Records in DB: {db.get_count()}")
-
-    # Основной парсинг
-    try:
-        total_fetched, total_inserted = run_parse(client, db)
-        logger.info(f"Parsing done: fetched={total_fetched}, inserted={total_inserted}")
-    except Exception as e:
-        logger.error(f"Parsing failed: {e}")
-        total_fetched = total_inserted = 0
-        total_errors += 1
-
-    # Мод 6: расширенные данные
-    try:
-        fetch_extended_data(client, db)
-    except Exception as e:
-        logger.error(f"Extended data fetch failed: {e}")
-        total_errors += 1
-
-    # Мод 7: сохранить метрики
-    duration = time.time() - start_time
-    db.save_metrics(
-        duration_sec=duration,
-        total_fetched=total_fetched,
-        total_inserted=total_inserted,
-        total_errors=total_errors,
-    )
-
-    # Мод 5: экспорт в XLSX
-    logger.info("Exporting to XLSX...")
-    records = db.get_all_records()
-    exporter = XLSXExporter("data/export.xlsx")
-    exporter.export(records)
-
-    logger.info(f"Done. Total records in DB: {db.get_count()}, duration: {duration:.1f}s")
-    db.close()
 
 
 if __name__ == "__main__":

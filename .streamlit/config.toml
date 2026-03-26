@@ -1,0 +1,9 @@
+[server]
+headless = true
+port = 8501
+
+[browser]
+serverAddress = "localhost"
+
+[runner]
+magicEnabled = false

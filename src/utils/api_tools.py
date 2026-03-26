@@ -19,6 +19,7 @@ from config import (
     DELAY_AFTER_ERROR,
     PAGES_BEFORE_TOKEN_REFRESH,
     PAGE_SIZE,
+    BEARER_TOKEN,
 )
 
 
@@ -28,13 +29,22 @@ class SessionManager:
     def __init__(self, headers: dict, timeout: int = TIMEOUT):
         self.base_headers = headers.copy()
         self.timeout = timeout
+        self._config_token = BEARER_TOKEN
         self._token: Optional[str] = None
         self._token_exp: Optional[float] = None
         self.session = self._new_session()
 
+        if self._config_token:
+            self._token = self._config_token
+            self._token_exp = self._decode_exp(self._config_token)
+            self.session.headers["Authorization"] = f"Bearer {self._config_token}"
+            logger.info("Bearer token loaded from config")
+
     def _new_session(self) -> requests.Session:
         s = requests.Session()
         s.headers.update(self.base_headers)
+        if self._config_token:
+            s.headers["Authorization"] = f"Bearer {self._config_token}"
         return s
 
     def _extract_token(self, response: requests.Response) -> Optional[str]:
@@ -80,8 +90,12 @@ class SessionManager:
                     self._token_exp = self._decode_exp(token)
                     self.session.headers["Authorization"] = f"Bearer {token}"
                     logger.info("Bearer token obtained from /ral response")
+                elif self._config_token:
+                    logger.info("Using config Bearer token")
                 else:
-                    logger.warning("Bearer token not found in /ral response, session cookies only")
+                    logger.warning(
+                        "Bearer token not found in /ral response, session cookies only"
+                    )
                 time.sleep(2)
                 return True
         except Exception as e:
@@ -170,14 +184,15 @@ class RosreestrAPIClient:
             "sortBy": "id",
             "sortDest": sort_dir,
             "numberOfAllRecords": False,
-            "page": 0,
+            "page": offset,  # offset = page (0, 1, 2...)
         }
         if filters:
             payload.update(filters)
 
+        logger.info(f"REQUEST: {payload}")
+
         for attempt in range(self.retry_max):
             try:
-                logger.debug(f"Fetching offset={offset} sort={sort_dir} attempt={attempt + 1}")
                 response = self.session.request(
                     method="POST",
                     url=self.url,
@@ -187,6 +202,12 @@ class RosreestrAPIClient:
 
                 if response.status_code == 200:
                     data = response.json()
+                    total = data.get("total", 0)
+                    items_count = len(data.get("items", []))
+                    pages_count = (total + 99) // 100
+                    logger.info(
+                        f"RESPONSE: total={total}, items={items_count}, pages={pages_count}"
+                    )
                     if "total" in data:
                         self._total_records = data["total"]
                     self.pages_fetched += 1
@@ -200,12 +221,25 @@ class RosreestrAPIClient:
                 elif response.status_code == 403:
                     self._handle_403()
 
+                elif response.status_code == 401:
+                    error_msg = (
+                        response.text[:500] if response.text else "Empty response"
+                    )
+                    logger.warning(
+                        f"HTTP 401 - {error_msg} - refreshing session and retrying..."
+                    )
+                    self.session_mgr.refresh()
+                    self._wait(self.delay_after_error)
+
                 elif response.status_code == 400:
                     logger.warning(f"400 Bad Request: {response.text[:300]}")
                     self._wait(self.delay_after_error)
 
                 else:
-                    logger.error(f"HTTP {response.status_code}: {response.text[:200]}")
+                    error_msg = (
+                        response.text[:300] if response.text else "Empty response"
+                    )
+                    logger.error(f"HTTP {response.status_code}: {error_msg}")
 
             except requests.exceptions.Timeout:
                 logger.warning(f"Timeout on attempt {attempt + 1}")
@@ -241,7 +275,11 @@ class RosreestrAPIClient:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                items = data if isinstance(data, list) else data.get("items", data.get("data", []))
+                items = (
+                    data
+                    if isinstance(data, list)
+                    else data.get("items", data.get("data", []))
+                )
                 logger.info(f"Fetched {len(items)} federal districts")
                 return items
         except Exception as e:
@@ -257,7 +295,11 @@ class RosreestrAPIClient:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                items = data if isinstance(data, list) else data.get("items", data.get("data", []))
+                items = (
+                    data
+                    if isinstance(data, list)
+                    else data.get("items", data.get("data", []))
+                )
                 logger.info(f"Fetched {len(items)} regions for {district_id}")
                 return items
         except Exception as e:
@@ -286,23 +328,38 @@ class RosreestrAPIClient:
         return None
 
     def enrich_details(self, raw: dict) -> dict:
-        """Нормализует сырой ответ деталей в плоский dict для БД."""
-        contacts = raw.get("contacts", raw.get("contactData", {})) or {}
-        head = raw.get("head", raw.get("headData", {})) or {}
-        history = raw.get("statusHistory", raw.get("history", []))
+        """Нормализует сырой ответ деталей в плоский dict для БД.
 
-        phones = contacts.get("phones", []) or []
-        emails = contacts.get("emails", []) or []
-        if isinstance(phones, str):
-            phones = [phones]
-        if isinstance(emails, str):
-            emails = [emails]
+        API: /api/v1/ral/common/companies/{id}
+        Извлекает:
+        - headPersonFIO: surname + name + patronymic
+        - contactPhone: contacts[idType=1]
+        - contactEmail: contacts[idType=4]
+        """
+        applicant = raw.get("applicant", {})
+        contacts = applicant.get("contacts", [])
+        head_person = raw.get("headPerson", {})
+
+        head_fio = ""
+        if head_person:
+            parts = [
+                head_person.get("surname", ""),
+                head_person.get("name", ""),
+                head_person.get("patronymic", ""),
+            ]
+            head_fio = " ".join(p for p in parts if p)
+
+        phone = ""
+        email = ""
+        if contacts:
+            for c in contacts:
+                if c.get("idType") == 1:
+                    phone = c.get("value", "")
+                elif c.get("idType") == 4:
+                    email = c.get("value", "")
 
         return {
-            "phones": phones,
-            "emails": emails,
-            "headFullName": head.get("fullName") or raw.get("headFullName"),
-            "headInn": head.get("inn") or raw.get("headInn"),
-            "headPosition": head.get("position") or raw.get("headPosition"),
-            "statusHistory": history,
+            "headFullName": head_fio,
+            "phones": [phone] if phone else [],
+            "emails": [email] if email else [],
         }
