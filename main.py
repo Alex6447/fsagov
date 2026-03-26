@@ -6,7 +6,7 @@ import argparse
 from loguru import logger
 
 from config import PAGE_SIZE
-from src.utils.api_tools import RosreestrAPIClient, FilterBuilder
+from src.utils.api_tools import RosreestrAPIClient, FilterBuilder, TokenExpiredError
 from src.utils.db_tools import Database
 from src.utils.xlsx_tools import XLSXExporter
 from src.utils.log_tools import setup_logging
@@ -97,19 +97,11 @@ def fetch_and_insert(
 def sort_districts_by_progress(db: Database, districts: list[dict]) -> list[dict]:
     """Сортирует округа по возрастанию процента загрузки."""
     downloaded_map: dict[str, int] = {}
-
-    try:
-        db.connect()
-        cursor = db.conn.cursor()
-        cursor.execute(
-            "SELECT federal_district, COUNT(*) as cnt FROM showcases GROUP BY federal_district"
-        )
-        for row in cursor.fetchall():
-            name = (row[0] or "").strip()
-            if name:
-                downloaded_map[name] = int(row[1] or 0)
-    finally:
-        db.close()
+    for district in districts:
+        district_name = (district.get("name") or "").strip()
+        district_id = district.get("id")
+        if district_name and district_id:
+            downloaded_map[district_name] = db.count_records_for_district(district_id)
 
     def progress_key(d: dict):
         name = (d.get("name") or "").strip()
@@ -366,6 +358,7 @@ def main():
     logger.info("Starting FSA parser")
     start_time = time.time()
     total_errors = 0
+    total_fetched = total_inserted = 0
 
     client = RosreestrAPIClient()
     db = Database()
@@ -376,38 +369,66 @@ def main():
     existing_ids = set(db.get_all_ids())
 
     try:
-        total_fetched, total_inserted = parse_with_filters(
-            client, db, {}, existing_ids, depth=0
+        try:
+            total_fetched, total_inserted = parse_with_filters(
+                client, db, {}, existing_ids, depth=0
+            )
+            logger.info(
+                f"Parsing done: fetched={total_fetched}, inserted={total_inserted}"
+            )
+        except TokenExpiredError as e:
+            total_errors += 1
+            logger.error(f"CRITICAL STOP: {e}")
+            duration = time.time() - start_time
+            db.save_metrics(
+                duration_sec=duration,
+                total_fetched=total_fetched,
+                total_inserted=total_inserted,
+                total_errors=total_errors,
+            )
+            logger.error("Process stopped: update fgis_token in Settings and restart.")
+            return
+        except Exception as e:
+            logger.error(f"Parsing failed: {e}")
+            total_fetched = total_inserted = 0
+            total_errors += 1
+
+        try:
+            fetch_extended_data(client, db)
+        except TokenExpiredError as e:
+            total_errors += 1
+            logger.error(f"CRITICAL STOP: {e}")
+            duration = time.time() - start_time
+            db.save_metrics(
+                duration_sec=duration,
+                total_fetched=total_fetched,
+                total_inserted=total_inserted,
+                total_errors=total_errors,
+            )
+            logger.error("Process stopped: update fgis_token in Settings and restart.")
+            return
+        except Exception as e:
+            logger.error(f"Extended data fetch failed: {e}")
+            total_errors += 1
+
+        duration = time.time() - start_time
+        db.save_metrics(
+            duration_sec=duration,
+            total_fetched=total_fetched,
+            total_inserted=total_inserted,
+            total_errors=total_errors,
         )
-        logger.info(f"Parsing done: fetched={total_fetched}, inserted={total_inserted}")
-    except Exception as e:
-        logger.error(f"Parsing failed: {e}")
-        total_fetched = total_inserted = 0
-        total_errors += 1
 
-    try:
-        fetch_extended_data(client, db)
-    except Exception as e:
-        logger.error(f"Extended data fetch failed: {e}")
-        total_errors += 1
+        logger.info("Exporting to XLSX...")
+        records = db.get_all_records()
+        exporter = XLSXExporter("data/export.xlsx")
+        exporter.export(records)
 
-    duration = time.time() - start_time
-    db.save_metrics(
-        duration_sec=duration,
-        total_fetched=total_fetched,
-        total_inserted=total_inserted,
-        total_errors=total_errors,
-    )
-
-    logger.info("Exporting to XLSX...")
-    records = db.get_all_records()
-    exporter = XLSXExporter("data/export.xlsx")
-    exporter.export(records)
-
-    logger.info(
-        f"Done. Total records in DB: {db.get_count()}, duration: {duration:.1f}s"
-    )
-    db.close()
+        logger.info(
+            f"Done. Total records in DB: {db.get_count()}, duration: {duration:.1f}s"
+        )
+    finally:
+        db.close()
 
 
 def fetch_extended_data(client: RosreestrAPIClient, db: Database):

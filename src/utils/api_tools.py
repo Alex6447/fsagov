@@ -23,6 +23,10 @@ from config import (
 )
 
 
+class TokenExpiredError(RuntimeError):
+    """Критическая ошибка: Bearer-токен недействителен и не может быть обновлён."""
+
+
 class SessionManager:
     """Мод 1: управление жизненным циклом сессии и Bearer-токена."""
 
@@ -228,11 +232,12 @@ class RosreestrAPIClient:
                     logger.warning(f"HTTP 401 - {error_msg} - refreshing session...")
                     self.session_mgr.refresh()
                     if not self.session_mgr.is_valid():
-                        logger.error(
+                        msg = (
                             "Bearer token is expired and could not be refreshed. "
                             "Please update fgis_token in Settings."
                         )
-                        return None
+                        logger.error(msg)
+                        raise TokenExpiredError(msg)
                     self._wait(self.delay_after_error)
 
                 elif response.status_code == 400:
@@ -322,6 +327,19 @@ class RosreestrAPIClient:
                     return resp.json()
                 elif resp.status_code == 403:
                     self._handle_403()
+                elif resp.status_code == 401:
+                    logger.warning(
+                        f"Details {record_id}: HTTP 401 - refreshing session..."
+                    )
+                    self.session_mgr.refresh()
+                    if not self.session_mgr.is_valid():
+                        msg = (
+                            "Bearer token is expired and could not be refreshed. "
+                            "Please update fgis_token in Settings."
+                        )
+                        logger.error(msg)
+                        raise TokenExpiredError(msg)
+                    self._wait(self.delay_after_error)
                 elif resp.status_code == 404:
                     return None
                 else:

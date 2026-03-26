@@ -295,14 +295,107 @@ class Database:
     def update_region_batch(self, record_ids: List[int], region: str):
         if not record_ids:
             return
+        region = (region or "").strip()
+        if not region:
+            return
+
         self.connect()
         cursor = self.conn.cursor()
         placeholders = ",".join(["?"] * len(record_ids))
         cursor.execute(
-            f"UPDATE showcases SET region = ? WHERE id IN ({placeholders})",
-            [region] + record_ids,
+            f"SELECT id, region FROM showcases WHERE id IN ({placeholders})", record_ids
         )
+        rows = cursor.fetchall()
+
+        updates = []
+        for row in rows:
+            record_id = row["id"]
+            current = row["region"] or ""
+            merged = self._merge_regions(current, region)
+            if merged != current:
+                updates.append((merged, record_id))
+
+        if updates:
+            cursor.executemany("UPDATE showcases SET region = ? WHERE id = ?", updates)
         self._commit_and_close()
+
+    @staticmethod
+    def _split_regions(value: str) -> List[str]:
+        if not value:
+            return []
+        return [part.strip() for part in str(value).split(";") if part.strip()]
+
+    @classmethod
+    def _merge_regions(cls, current: str, new_region: str) -> str:
+        merged: List[str] = []
+        seen = set()
+
+        for name in cls._split_regions(current):
+            low = name.lower()
+            if low not in seen:
+                seen.add(low)
+                merged.append(name)
+
+        for name in cls._split_regions(new_region):
+            low = name.lower()
+            if low not in seen:
+                seen.add(low)
+                merged.append(name)
+
+        return "; ".join(merged)
+
+    @staticmethod
+    def _region_match_clause(column: str = "region") -> str:
+        return (
+            f"({column} = ? OR {column} LIKE ? OR {column} LIKE ? OR {column} LIKE ?)"
+        )
+
+    @staticmethod
+    def _region_match_params(region_name: str) -> tuple[str, str, str, str]:
+        return (
+            region_name,
+            f"{region_name}; %",
+            f"%; {region_name}; %",
+            f"%; {region_name}",
+        )
+
+    def count_records_for_region(self, region_name: str) -> int:
+        region_name = (region_name or "").strip()
+        if not region_name:
+            return 0
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"SELECT COUNT(*) FROM showcases WHERE {self._region_match_clause()}",
+            self._region_match_params(region_name),
+        )
+        result = int(cursor.fetchone()[0] or 0)
+        self.close()
+        return result
+
+    def count_records_for_district(self, district_id: str) -> int:
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT name FROM nsi_regions WHERE district_id = ?",
+            (district_id,),
+        )
+        region_names = [row[0] for row in cursor.fetchall() if row[0]]
+        if not region_names:
+            self.close()
+            return 0
+
+        clauses = []
+        params: List[str] = []
+        for name in region_names:
+            clauses.append(self._region_match_clause())
+            params.extend(self._region_match_params(name))
+
+        sql = f"SELECT COUNT(*) FROM showcases WHERE {' OR '.join(clauses)}"
+        cursor.execute(sql, params)
+        result = int(cursor.fetchone()[0] or 0)
+        self.close()
+        return result
 
     def get_ids_without_details(self) -> List[int]:
         self.connect()

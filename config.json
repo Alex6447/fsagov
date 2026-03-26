@@ -2,5 +2,5 @@
   "timeout": 30,
   "retry_max": 3,
   "delay": 3,
-  "fgis_token": "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJGQVUgTklBIiwic3ViIjoiYW5vbnltb3VzIiwiZXhwIjoxNzc0NTI2ODMxLCJpYXQiOjE3NzQ0OTgwMzF9.pzjjqpTCPaJYTGdscosRhaeSFsyX2w0qFs0ecQBPAYZvG9H0xhwDhAuBcyoJ4t-e42V1CGPsS-kzRhi43oCNDg"
+  "fgis_token": "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJGQVUgTklBIiwic3ViIjoiYW5vbnltb3VzIiwicmVtb3RlSXAiOiJudWxsIiwiZXhwIjoxNzc0NTU1MzMyLCJpYXQiOjE3NzQ1MjY1MzJ9.pzDj6Tz97HT1jULFqSPe61ZqFRsy0AxDw-Rd-XS-oYpVmBkT3amnqMn_tB22pOXgZbyikkeOwiWHo4eef0NLCA"
 }

@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -40,6 +41,7 @@ DEFAULT_UI_CONFIG = {
     "text_color": "#F9FAFB",
     "background_color": "#0A0E1A",
 }
+TOKEN_EXPIRED_MARKER = "Bearer token is expired and could not be refreshed."
 
 session_state = st.session_state
 if "running" not in session_state:
@@ -54,6 +56,12 @@ if "run_started_at" not in session_state:
     session_state.run_started_at = None
 if "run_command" not in session_state:
     session_state.run_command = ""
+if "run_baseline_overall_ratio" not in session_state:
+    session_state.run_baseline_overall_ratio = None
+if "run_baseline_downloaded_total" not in session_state:
+    session_state.run_baseline_downloaded_total = None
+if "run_baseline_source_total" not in session_state:
+    session_state.run_baseline_source_total = None
 
 
 def load_config() -> dict:
@@ -115,6 +123,9 @@ def _sync_runtime_state():
     state = _read_run_state()
     if not state:
         session_state.running = False
+        session_state.run_baseline_overall_ratio = None
+        session_state.run_baseline_downloaded_total = None
+        session_state.run_baseline_source_total = None
         return
 
     pid = int(state.get("pid") or 0)
@@ -122,10 +133,18 @@ def _sync_runtime_state():
         session_state.running = True
         session_state.run_started_at = state.get("started_at")
         session_state.run_command = state.get("command", "")
+        session_state.run_baseline_overall_ratio = state.get("baseline_overall_ratio")
+        session_state.run_baseline_downloaded_total = state.get(
+            "baseline_downloaded_total"
+        )
+        session_state.run_baseline_source_total = state.get("baseline_source_total")
     else:
         _clear_run_state()
         session_state.running = False
         session_state.run_started_at = None
+        session_state.run_baseline_overall_ratio = None
+        session_state.run_baseline_downloaded_total = None
+        session_state.run_baseline_source_total = None
 
 
 def _get_active_run_info() -> dict | None:
@@ -137,11 +156,76 @@ def _get_active_run_info() -> dict | None:
     if not _is_pid_running(pid):
         return None
 
+    display_pid = pid
+    process_name = _get_process_name(pid)
+    if process_name == "uv.exe":
+        child_pid = _find_python_child_pid(pid)
+        if child_pid:
+            display_pid = child_pid
+
     return {
-        "pid": pid,
+        "pid": display_pid,
+        "state_pid": pid,
         "command": state.get("command", ""),
         "started_at": state.get("started_at"),
     }
+
+
+def _get_process_name(pid: int) -> str:
+    try:
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                f'$p = Get-CimInstance Win32_Process -Filter "ProcessId = {pid}"; '
+                "if ($p) { $p.Name }"
+            ),
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            check=False,
+        )
+        return result.stdout.strip().lower()
+    except Exception:
+        return ""
+
+
+def _find_python_child_pid(parent_pid: int) -> int | None:
+    try:
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                "Get-CimInstance Win32_Process "
+                f'-Filter "ParentProcessId = {parent_pid}" '
+                "| Where-Object { $_.Name -eq 'python.exe' } "
+                "| Select-Object -First 1 -ExpandProperty ProcessId"
+            ),
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            check=False,
+        )
+        value = result.stdout.strip()
+        if not value:
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _svg(path: str, size: int = 16) -> str:
@@ -521,21 +605,11 @@ def get_db_stats() -> dict:
         for row in cursor.fetchall()
     ]
 
-    # Скачанные записи по округу
-    cursor.execute(
-        "SELECT federal_district, COUNT(*) as cnt FROM showcases GROUP BY federal_district"
-    )
-    downloaded_by_district = {}
-    for row in cursor.fetchall():
-        name = row[0]
-        if name:
-            downloaded_by_district[name.strip()] = row[1]
-
     for d in all_districts:
         stats["districts"].append(
             {
                 "name": d["name"],
-                "downloaded": downloaded_by_district.get(d["name"], 0),
+                "downloaded": db.count_records_for_district(d["id"]),
                 "total_source": d["total_source"],
             }
         )
@@ -602,7 +676,7 @@ def get_districts_and_regions() -> tuple:
 
 def _build_run_command(script_name: str, *args) -> list[str]:
     clean_args = [arg for arg in args if arg]
-    return ["uv", "run", "python", "-u", script_name, *clean_args]
+    return [sys.executable, "-u", script_name, *clean_args]
 
 
 def _get_live_status() -> str:
@@ -621,13 +695,7 @@ def _count_region_records(region_name: str) -> int | None:
 
     db = Database()
     try:
-        db.connect()
-        cursor = db.conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM showcases WHERE region = ?", (region_name,)
-        )
-        row = cursor.fetchone()
-        return int(row[0] if row else 0)
+        return db.count_records_for_region(region_name)
     except Exception:
         return None
     finally:
@@ -644,13 +712,11 @@ def _get_district_progress(
     try:
         db.connect()
         cursor = db.conn.cursor()
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM showcases WHERE federal_district = ?",
-            (district_name,),
-        )
-        downloaded_row = cursor.fetchone()
-        downloaded = int(downloaded_row[0] if downloaded_row else 0)
+        cursor.execute("SELECT id FROM nsi_districts WHERE name = ?", (district_name,))
+        district_row = cursor.fetchone()
+        if not district_row:
+            return None, None, None
+        district_id = district_row[0]
 
         cursor.execute(
             "SELECT total_source FROM nsi_districts WHERE name = ?", (district_name,)
@@ -659,6 +725,8 @@ def _get_district_progress(
         total_source = (
             int(total_row[0] or 0) if total_row and total_row[0] is not None else 0
         )
+        db.close()
+        downloaded = db.count_records_for_district(district_id)
 
         if total_source > 0:
             ratio = max(0.0, min(1.0, downloaded / total_source))
@@ -672,6 +740,47 @@ def _get_district_progress(
         db.close()
 
 
+def _get_overall_fill_ratio() -> float | None:
+    stats = _get_overall_fill_stats()
+    if not stats:
+        return None
+    downloaded_total, source_total = stats
+    if source_total <= 0:
+        return None
+    return max(0.0, min(1.0, downloaded_total / source_total))
+
+
+def _get_overall_fill_stats() -> tuple[int, int] | None:
+    db = Database()
+    try:
+        db.connect()
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT id, name, total_source FROM nsi_districts")
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+        db.close()
+
+        downloaded_total = 0
+        source_total = 0
+        counter_db = Database()
+        for row in rows:
+            district_id = row[0]
+            downloaded = counter_db.count_records_for_district(district_id)
+            total_source = int(row[2] or 0)
+            downloaded_total += downloaded
+            source_total += max(total_source, downloaded)
+
+        if source_total <= 0:
+            return None
+
+        return downloaded_total, source_total
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 def _region_to_district_map() -> dict[str, str]:
     mapping: dict[str, str] = {}
     districts, district_map = get_districts_and_regions()
@@ -680,6 +789,21 @@ def _region_to_district_map() -> dict[str, str]:
         for region_name in district_map.get(district_name, []):
             mapping[region_name] = district_name
     return mapping
+
+
+def _split_region_value(region_value: str | None) -> list[str]:
+    if not region_value:
+        return []
+    return [part.strip() for part in str(region_value).split(";") if part.strip()]
+
+
+def _record_has_region(record: dict, region_name: str) -> bool:
+    region_name = (region_name or "").strip()
+    if not region_name:
+        return False
+    values = _split_region_value(record.get("region"))
+    region_low = region_name.lower()
+    return any(v.lower() == region_low for v in values)
 
 
 def _get_live_parse_snapshot() -> tuple[str, float]:
@@ -728,8 +852,48 @@ def _get_live_parse_snapshot() -> tuple[str, float]:
     inserted_text = f"{inserted:,}".replace(",", " ") if inserted is not None else "—"
     region_text = region_name or "—"
 
-    _, _, district_ratio = _get_district_progress(district_name)
-    progress = district_ratio if district_ratio is not None else 0.02
+    current_stats = _get_overall_fill_stats()
+    baseline_downloaded_total = session_state.run_baseline_downloaded_total
+    baseline_source_total = session_state.run_baseline_source_total
+    progress = 0.02
+    if (
+        current_stats is not None
+        and baseline_downloaded_total is not None
+        and baseline_source_total is not None
+    ):
+        current_downloaded_total, current_source_total = current_stats
+
+        # Если формула/метрика изменилась и baseline стал несопоставимым
+        # (current < baseline), перебазируем старт в текущую точку, чтобы
+        # progress-бар не "зависал" на минимуме.
+        if int(current_downloaded_total) < int(baseline_downloaded_total):
+            baseline_downloaded_total = int(current_downloaded_total)
+            baseline_source_total = max(
+                int(current_source_total), int(baseline_source_total)
+            )
+            session_state.run_baseline_downloaded_total = baseline_downloaded_total
+            session_state.run_baseline_source_total = baseline_source_total
+
+            state = _read_run_state()
+            if state:
+                state["baseline_downloaded_total"] = baseline_downloaded_total
+                state["baseline_source_total"] = baseline_source_total
+                _write_run_state(state)
+
+        remaining_at_start = max(
+            0, int(baseline_source_total) - int(baseline_downloaded_total)
+        )
+        completed_since_start = max(
+            0, int(current_downloaded_total) - int(baseline_downloaded_total)
+        )
+
+        if remaining_at_start > 0:
+            progress = max(
+                0.0,
+                min(1.0, completed_since_start / remaining_at_start),
+            )
+        else:
+            progress = 1.0
 
     text = (
         f"{district_name} - {region_text} - всего записей: {total_text} - "
@@ -749,6 +913,81 @@ def _read_log_tail(limit: int = 200) -> list[str]:
         return lines[-limit:]
     except Exception:
         return []
+
+
+def _parse_log_time(line: str) -> datetime | None:
+    try:
+        return datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
+    except Exception:
+        return None
+
+
+def _read_last_session_logs(limit: int = 300) -> list[str]:
+    log_path = Path("logs/log.log")
+    if not log_path.exists():
+        return []
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+
+    if not lines:
+        return []
+
+    # 1) Приоритет: текущий/последний активный run из run_state.json
+    state = _read_run_state()
+    started_at = None
+    if state:
+        started_at = state.get("started_at")
+    if started_at:
+        try:
+            since = datetime.fromtimestamp(float(started_at))
+            session_lines = []
+            in_window = False
+            for line in lines:
+                ts = _parse_log_time(line)
+                if ts is not None:
+                    in_window = ts >= since
+                if in_window:
+                    session_lines.append(line)
+            if session_lines:
+                return session_lines[-limit:]
+        except Exception:
+            pass
+
+    # 2) Фоллбек: последняя сессия main.py по маркеру старта
+    start_idx = None
+    for idx in range(len(lines) - 1, -1, -1):
+        if "Starting FSA parser" in lines[idx]:
+            start_idx = idx
+            break
+
+    if start_idx is not None:
+        return lines[start_idx:][-limit:]
+
+    return lines[-limit:]
+
+
+def _has_recent_token_expired_error(
+    limit: int = 600, since_epoch: float | None = None
+) -> bool:
+    lines = _read_log_tail(limit=limit)
+    since_dt = datetime.fromtimestamp(since_epoch) if since_epoch else None
+    for line in reversed(lines):
+        if TOKEN_EXPIRED_MARKER not in line:
+            continue
+        if since_dt is None:
+            return True
+        try:
+            ts_text = line[:23]
+            line_dt = datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S.%f")
+            if line_dt >= since_dt:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _render_readme(readme_path: Path):
@@ -810,18 +1049,33 @@ def run_script(script_name: str, *args):
 
     started_at = time.time()
     command_text = " ".join(cmd)
+    baseline_stats = _get_overall_fill_stats()
+    baseline_downloaded_total = None
+    baseline_source_total = None
+    baseline_overall_ratio = None
+    if baseline_stats is not None:
+        baseline_downloaded_total, baseline_source_total = baseline_stats
+        if baseline_source_total > 0:
+            baseline_overall_ratio = baseline_downloaded_total / baseline_source_total
+
     _write_run_state(
         {
             "pid": proc.pid,
             "script": script_name,
             "command": command_text,
             "started_at": started_at,
+            "baseline_overall_ratio": baseline_overall_ratio,
+            "baseline_downloaded_total": baseline_downloaded_total,
+            "baseline_source_total": baseline_source_total,
         }
     )
 
     session_state.running = True
     session_state.run_started_at = started_at
     session_state.run_command = command_text
+    session_state.run_baseline_overall_ratio = baseline_overall_ratio
+    session_state.run_baseline_downloaded_total = baseline_downloaded_total
+    session_state.run_baseline_source_total = baseline_source_total
     session_state.log_messages = [f"Запущено: {session_state.run_command}\n"]
     session_state.progress = 0
     session_state.process = proc
@@ -834,6 +1088,9 @@ def stop_script():
         session_state.running = False
         session_state.process = None
         session_state.run_started_at = None
+        session_state.run_baseline_overall_ratio = None
+        session_state.run_baseline_downloaded_total = None
+        session_state.run_baseline_source_total = None
         return "Активный процесс не найден"
 
     pid = int(state.get("pid") or 0)
@@ -851,6 +1108,9 @@ def stop_script():
     session_state.running = False
     session_state.process = None
     session_state.run_started_at = None
+    session_state.run_baseline_overall_ratio = None
+    session_state.run_baseline_downloaded_total = None
+    session_state.run_baseline_source_total = None
     return f"Процесс PID {pid} остановлен"
 
 
@@ -1004,7 +1264,7 @@ def main():
                 elapsed = 0
                 if session_state.run_started_at:
                     elapsed = int(time.time() - session_state.run_started_at)
-                elapsed_label = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+                elapsed_label = f"{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:{elapsed % 60:02d}"
                 snapshot_text, snapshot_progress = _get_live_parse_snapshot()
                 fill_percent = max(2, min(100, int(snapshot_progress * 100)))
 
@@ -1016,6 +1276,15 @@ def main():
                     unsafe_allow_html=True,
                 )
                 st.caption(snapshot_text)
+                if _has_recent_token_expired_error(
+                    limit=400, since_epoch=session_state.run_started_at
+                ):
+                    st.markdown(
+                        "<p style='color:#EF4444;font-weight:700;margin:2px 0 0;'>"
+                        "Процесс остановлен: fgis_token - поменять."
+                        "</p>",
+                        unsafe_allow_html=True,
+                    )
 
         with col2:
             active_run = _get_active_run_info()
@@ -1100,7 +1369,27 @@ def main():
                 "Федеральный округ", district_names, key="district_select"
             )
 
-            selected_region = st.selectbox("Регион", ["Все"], key="region_select")
+            _, district_region_map = get_districts_and_regions()
+            if selected_district == "Все":
+                region_options = sorted(
+                    {
+                        region
+                        for regions in district_region_map.values()
+                        for region in regions
+                        if region
+                    }
+                )
+            else:
+                region_options = sorted(
+                    [r for r in district_region_map.get(selected_district, []) if r]
+                )
+
+            region_choices = ["Все"] + region_options
+            if session_state.get("region_select") not in region_choices:
+                session_state["region_select"] = "Все"
+            selected_region = st.selectbox(
+                "Регион", region_choices, key="region_select"
+            )
 
             district_arg = None if selected_district == "Все" else selected_district
             region_arg = None if selected_region == "Все" else selected_region
@@ -1109,11 +1398,17 @@ def main():
             records = db.get_all_records()
 
             if district_arg:
+                district_regions = set(district_region_map.get(district_arg, []))
                 records = [
-                    r for r in records if r.get("federal_district") == district_arg
+                    r
+                    for r in records
+                    if any(
+                        reg in district_regions
+                        for reg in _split_region_value(r.get("region"))
+                    )
                 ]
             if region_arg:
-                records = [r for r in records if r.get("region") == region_arg]
+                records = [r for r in records if _record_has_region(r, region_arg)]
 
             db.close()
 
@@ -1184,7 +1479,7 @@ def main():
                 )
 
         # Show logs
-        log_messages = _read_log_tail(limit=300)
+        log_messages = _read_last_session_logs(limit=300)
         if not log_messages:
             log_messages = session_state.log_messages[-200:]
 
