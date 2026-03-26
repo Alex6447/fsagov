@@ -751,6 +751,44 @@ def _read_log_tail(limit: int = 200) -> list[str]:
         return []
 
 
+def _render_readme(readme_path: Path):
+    """Render README with support for local markdown images."""
+    try:
+        content = readme_path.read_text(encoding="utf-8")
+    except Exception as e:
+        st.error(f"Не удалось прочитать README.md: {e}")
+        return
+
+    image_pattern = re.compile(r"!\[(.*?)\]\((.*?)\)")
+    markdown_buffer: list[str] = []
+
+    for line in content.splitlines():
+        match = image_pattern.search(line.strip())
+        if not match:
+            markdown_buffer.append(line)
+            continue
+
+        if markdown_buffer:
+            st.markdown("\n".join(markdown_buffer))
+            markdown_buffer = []
+
+        alt_text = match.group(1).strip() or None
+        image_ref = match.group(2).strip().split()[0]
+
+        if image_ref.startswith(("http://", "https://")):
+            st.markdown(line)
+            continue
+
+        local_image = (readme_path.parent / image_ref).resolve()
+        if local_image.exists():
+            st.image(str(local_image), caption=alt_text, use_container_width=True)
+        else:
+            st.warning(f"Изображение не найдено: {image_ref}")
+
+    if markdown_buffer:
+        st.markdown("\n".join(markdown_buffer))
+
+
 def run_script(script_name: str, *args):
     active_state = _read_run_state()
     if active_state and _is_pid_running(int(active_state.get("pid") or 0)):
@@ -1124,10 +1162,14 @@ def main():
     with tab4:
         st.markdown("### Логи")
 
-        # Auto-refresh during parsing
-        if session_state.running:
-            time.sleep(2)
-            st.rerun()
+        refresh_col, hint_col = st.columns([1, 2])
+        with refresh_col:
+            st.button("Обновить логи", use_container_width=True, key="refresh_logs_btn")
+        with hint_col:
+            if session_state.running:
+                st.caption(
+                    "Парсинг выполняется. Обновляйте логи кнопкой, чтобы не блокировать вкладки."
+                )
 
         # Show logs
         log_messages = _read_log_tail(limit=300)
@@ -1263,13 +1305,13 @@ def main():
     with tab3:
         readme_path = Path("README.md")
         if readme_path.exists():
-            try:
-                with open(readme_path, "r", encoding="utf-8") as f:
-                    st.markdown(f.read())
-            except Exception as e:
-                st.error(f"Не удалось прочитать README.md: {e}")
+            _render_readme(readme_path)
         else:
             st.warning("README.md не найден в корне проекта")
+
+    if session_state.running:
+        time.sleep(2)
+        st.rerun()
 
 
 if __name__ == "__main__":
