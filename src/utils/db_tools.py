@@ -91,9 +91,15 @@ class Database:
             CREATE TABLE IF NOT EXISTS nsi_districts (
                 id TEXT PRIMARY KEY,
                 name TEXT,
+                total_source INTEGER DEFAULT NULL,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Миграция: добавить поле если таблица уже существует
+        try:
+            cursor.execute("ALTER TABLE nsi_districts ADD COLUMN total_source INTEGER DEFAULT NULL")
+        except Exception:
+            pass  # поле уже есть
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS nsi_regions (
                 id TEXT PRIMARY KEY,
@@ -344,10 +350,23 @@ class Database:
     def get_districts(self) -> List[dict]:
         self.connect()
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name FROM nsi_districts")
-        result = [{"id": row["id"], "name": row["name"]} for row in cursor.fetchall()]
+        cursor.execute("SELECT id, name, total_source FROM nsi_districts")
+        result = [
+            {"id": row["id"], "name": row["name"], "total_source": row["total_source"]}
+            for row in cursor.fetchall()
+        ]
         self.close()
         return result
+
+    def update_district_total(self, district_id: str, total: int):
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE nsi_districts SET total_source = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (total, district_id),
+        )
+        self._commit_and_close()
+        logger.info(f"District {district_id}: total_source = {total}")
 
     def get_regions(self, district_id: str) -> List[dict]:
         self.connect()

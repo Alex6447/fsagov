@@ -225,10 +225,14 @@ class RosreestrAPIClient:
                     error_msg = (
                         response.text[:500] if response.text else "Empty response"
                     )
-                    logger.warning(
-                        f"HTTP 401 - {error_msg} - refreshing session and retrying..."
-                    )
+                    logger.warning(f"HTTP 401 - {error_msg} - refreshing session...")
                     self.session_mgr.refresh()
+                    if not self.session_mgr.is_valid():
+                        logger.error(
+                            "Bearer token is expired and could not be refreshed. "
+                            "Please update fgis_token in Settings."
+                        )
+                        return None
                     self._wait(self.delay_after_error)
 
                 elif response.status_code == 400:
@@ -253,11 +257,12 @@ class RosreestrAPIClient:
 
         return None
 
-    def get_total(self, filters: dict = None) -> int:
+    def get_total(self, filters: dict = None):
         if self._total_records == 0 or filters:
             data = self.fetch_page(0, 1, filters=filters)
-            if data:
-                return data.get("total", 0)
+            if data is None:
+                return None  # ошибка запроса — не возвращаем 0
+            return data.get("total", 0)
         return self._total_records
 
     def get_page_count(self, filters: dict = None) -> int:

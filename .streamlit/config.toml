@@ -7,3 +7,11 @@ serverAddress = "localhost"
 
 [runner]
 magicEnabled = false
+
+[theme]
+base = "dark"
+primaryColor = "#10B981"
+backgroundColor = "#0A0E1A"
+secondaryBackgroundColor = "#111827"
+textColor = "#F9FAFB"
+font = "sans serif"
