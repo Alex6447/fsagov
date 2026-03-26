@@ -1,0 +1,6 @@
+{
+  "timeout": 30,
+  "retry_max": 3,
+  "delay": 3,
+  "fgis_token": "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJGQVUgTklBIiwic3ViIjoiYW5vbnltb3VzIiwiZXhwIjoxNzc0NTI2ODMxLCJpYXQiOjE3NzQ0OTgwMzF9.pzjjqpTCPaJYTGdscosRhaeSFsyX2w0qFs0ecQBPAYZvG9H0xhwDhAuBcyoJ4t-e42V1CGPsS-kzRhi43oCNDg"
+}

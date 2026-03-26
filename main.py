@@ -1,5 +1,7 @@
 import time
+import sys
 from typing import Optional
+import argparse
 
 from loguru import logger
 
@@ -11,6 +13,16 @@ from src.utils.log_tools import setup_logging
 
 MAXPAGES = 20  # Лимит страниц на один запрос (API ограничивает 20)
 
+# Parse command line args
+parser = argparse.ArgumentParser()
+parser.add_argument("--token", type=str, default="", help="Override fgis_token")
+args, _ = parser.parse_known_args()
+
+if args.token:
+    # Override token in config module
+    import config
+
+    config.BEARER_TOKEN = args.token
 
 setup_logging()
 

@@ -1,6 +1,8 @@
 import time
+import sys
 from pathlib import Path
 from datetime import datetime
+import argparse
 
 from loguru import logger
 
@@ -8,6 +10,16 @@ from config import PAGE_SIZE
 from src.utils.api_tools import RosreestrAPIClient, FilterBuilder
 from src.utils.db_tools import Database
 from src.utils.log_tools import setup_logging
+
+# Parse command line args
+parser = argparse.ArgumentParser()
+parser.add_argument("--token", type=str, default="", help="Override fgis_token")
+args, _ = parser.parse_known_args()
+
+if args.token:
+    import config
+
+    config.BEARER_TOKEN = args.token
 
 setup_logging()
 

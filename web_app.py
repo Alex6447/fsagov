@@ -16,10 +16,12 @@ from src.utils.log_tools import setup_logging
 
 setup_logging()
 
+
 @st.cache_resource
 def _init_db_once():
     db = Database()
     db.init_db()
+
 
 _init_db_once()
 
@@ -84,37 +86,60 @@ def _svg(path: str, size: int = 16) -> str:
 
 
 ICON = {
-    "home": _svg('<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
-                 '<polyline points="9 22 9 12 15 12 15 22"/>'),
-    "chart": _svg('<line x1="18" y1="20" x2="18" y2="10"/>'
-                  '<line x1="12" y1="20" x2="12" y2="4"/>'
-                  '<line x1="6" y1="20" x2="6" y2="14"/>'),
-    "sliders": _svg('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>'
-                    '<line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>'
-                    '<line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>'
-                    '<line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>'
-                    '<line x1="17" y1="16" x2="23" y2="16"/>'),
-    "book": _svg('<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>'
-                 '<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'),
-    "key": _svg('<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 '
-                '5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>'),
-    "terminal": _svg('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>'),
-    "download": _svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
-                     '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
-    "upload": _svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
-                   '<polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>'),
-    "refresh": _svg('<polyline points="23 4 23 10 17 10"/>'
-                    '<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'),
+    "home": _svg(
+        '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+        '<polyline points="9 22 9 12 15 12 15 22"/>'
+    ),
+    "chart": _svg(
+        '<line x1="18" y1="20" x2="18" y2="10"/>'
+        '<line x1="12" y1="20" x2="12" y2="4"/>'
+        '<line x1="6" y1="20" x2="6" y2="14"/>'
+    ),
+    "sliders": _svg(
+        '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>'
+        '<line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>'
+        '<line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>'
+        '<line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>'
+        '<line x1="17" y1="16" x2="23" y2="16"/>'
+    ),
+    "book": _svg(
+        '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>'
+        '<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>'
+    ),
+    "key": _svg(
+        '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 '
+        '5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>'
+    ),
+    "terminal": _svg(
+        '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>'
+    ),
+    "download": _svg(
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'
+    ),
+    "upload": _svg(
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>'
+    ),
+    "refresh": _svg(
+        '<polyline points="23 4 23 10 17 10"/>'
+        '<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'
+    ),
     "stop": _svg('<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>'),
-    "save": _svg('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>'
-                 '<polyline points="17 21 17 13 7 13 7 21"/>'
-                 '<polyline points="7 3 7 8 15 8"/>'),
-    "undo": _svg('<polyline points="1 4 1 10 7 10"/>'
-                 '<path d="M3.51 15a9 9 0 1 0 .49-3.36"/>'),
+    "save": _svg(
+        '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>'
+        '<polyline points="17 21 17 13 7 13 7 21"/>'
+        '<polyline points="7 3 7 8 15 8"/>'
+    ),
+    "undo": _svg(
+        '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.36"/>'
+    ),
     "activity": _svg('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
-    "database": _svg('<ellipse cx="12" cy="5" rx="9" ry="3"/>'
-                     '<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>'
-                     '<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'),
+    "database": _svg(
+        '<ellipse cx="12" cy="5" rx="9" ry="3"/>'
+        '<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>'
+        '<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'
+    ),
 }
 
 
@@ -409,11 +434,13 @@ def get_db_stats() -> dict:
             downloaded_by_district[name.strip()] = row[1]
 
     for d in all_districts:
-        stats["districts"].append({
-            "name": d["name"],
-            "downloaded": downloaded_by_district.get(d["name"], 0),
-            "total_source": d["total_source"],
-        })
+        stats["districts"].append(
+            {
+                "name": d["name"],
+                "downloaded": downloaded_by_district.get(d["name"], 0),
+                "total_source": d["total_source"],
+            }
+        )
 
     cursor.execute("SELECT name_status, COUNT(*) FROM showcases GROUP BY name_status")
     for row in cursor.fetchall():
@@ -456,9 +483,7 @@ def fetch_district_totals():
         filters = {"idAddressSubject": region_master_ids}
         total = client.get_total(filters=filters)
         if total is None:
-            raise RuntimeError(
-                "API вернул ошибку. Проверьте fgis_token в Настройках."
-            )
+            raise RuntimeError("API вернул ошибку. Проверьте fgis_token в Настройках.")
         db.update_district_total(district["id"], total)
 
     db.close()
@@ -541,7 +566,7 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(["  Дашборд", "  Настройки", "  Документация"])
+    tab1, tab2, tab3, tab4 = st.tabs(["  Дашборд", "  Настройки", "  README", "  Логи"])
 
     with tab1:
         col1, col2 = st.columns([2, 1])
@@ -587,47 +612,62 @@ def main():
                 st.markdown("#### Распределение по округам")
 
                 # Слой 1: полный контурный бар (total_source) — только рамка, без заливки
-                outline_bar = alt.Chart(df).mark_bar(
-                    filled=False,
-                    stroke="#10B981",
-                    strokeWidth=1.5,
-                    strokeOpacity=0.45,
-                    cornerRadiusTopRight=3,
-                    cornerRadiusBottomRight=3,
-                ).encode(
-                    x=alt.X("total_source:Q", title=None, axis=x_axis),
-                    y=y_enc,
-                    tooltip=[
-                        alt.Tooltip("name:N", title="Округ"),
-                        alt.Tooltip("total_source:Q", title="Всего на сайте", format="d"),
-                        alt.Tooltip("downloaded:Q", title="Скачано", format="d"),
-                    ],
+                outline_bar = (
+                    alt.Chart(df)
+                    .mark_bar(
+                        filled=False,
+                        stroke="#10B981",
+                        strokeWidth=1.5,
+                        strokeOpacity=0.45,
+                        cornerRadiusTopRight=3,
+                        cornerRadiusBottomRight=3,
+                    )
+                    .encode(
+                        x=alt.X("total_source:Q", title=None, axis=x_axis),
+                        y=y_enc,
+                        tooltip=[
+                            alt.Tooltip("name:N", title="Округ"),
+                            alt.Tooltip(
+                                "total_source:Q", title="Всего на сайте", format="d"
+                            ),
+                            alt.Tooltip("downloaded:Q", title="Скачано", format="d"),
+                        ],
+                    )
                 )
 
                 # Слой 2: заливочный бар (downloaded) — поверх
-                filled_bar = alt.Chart(df).mark_bar(
-                    color="#10B981",
-                    opacity=0.85,
-                    cornerRadiusTopRight=3,
-                    cornerRadiusBottomRight=3,
-                ).encode(
-                    x=alt.X("downloaded:Q", title=None, axis=x_axis),
-                    y=y_enc,
-                    tooltip=[
-                        alt.Tooltip("name:N", title="Округ"),
-                        alt.Tooltip("downloaded:Q", title="Скачано", format="d"),
-                        alt.Tooltip("total_source:Q", title="Всего на сайте", format="d"),
-                    ],
+                filled_bar = (
+                    alt.Chart(df)
+                    .mark_bar(
+                        color="#10B981",
+                        opacity=0.85,
+                        cornerRadiusTopRight=3,
+                        cornerRadiusBottomRight=3,
+                    )
+                    .encode(
+                        x=alt.X("downloaded:Q", title=None, axis=x_axis),
+                        y=y_enc,
+                        tooltip=[
+                            alt.Tooltip("name:N", title="Округ"),
+                            alt.Tooltip("downloaded:Q", title="Скачано", format="d"),
+                            alt.Tooltip(
+                                "total_source:Q", title="Всего на сайте", format="d"
+                            ),
+                        ],
+                    )
                 )
 
-                chart = alt.layer(outline_bar, filled_bar).properties(
-                    height=alt.Step(30)
-                ).configure_view(
-                    strokeWidth=0,
-                    fill="transparent",
-                ).configure_axis(
-                    domain=False,
-                    ticks=False,
+                chart = (
+                    alt.layer(outline_bar, filled_bar)
+                    .properties(height=alt.Step(30))
+                    .configure_view(
+                        strokeWidth=0,
+                        fill="transparent",
+                    )
+                    .configure_axis(
+                        domain=False,
+                        ticks=False,
+                    )
                 )
 
                 st.altair_chart(chart, use_container_width=True)
@@ -647,22 +687,14 @@ def main():
             )
 
             if session_state.running:
-                st.progress(session_state.progress / 100.0)
-                st.markdown(
-                    f"<p style='font-size:13px;color:#FCD34D;margin:8px 0;'>"
-                    f"{ICON['activity']}Операция выполняется...</p>",
-                    unsafe_allow_html=True,
-                )
-                if st.button("✕  Остановить", use_container_width=True):
-                    stop_script()
-                    st.rerun()
-
-            if st.button(
-                "↻  Полный парсинг",
-                disabled=session_state.running,
-                use_container_width=True,
-            ):
-                run_script("main.py")
+                st.info("⏳ Идёт загрузка... Смотрите вкладку 'Логи'")
+            else:
+                if st.button(
+                    "🔄 Полный парсинг", use_container_width=True, key="full_parse_btn"
+                ):
+                    cfg = load_config()
+                    token = cfg.get("fgis_token", "")
+                    run_script("main.py", f"--token={token}" if token else "")
 
             st.markdown(
                 "<p style='font-size:11px;color:#6B7280;margin:4px 0 8px;'>Полная загрузка всех данных</p>",
@@ -673,7 +705,7 @@ def main():
                 "⟳  Обновить данные источника",
                 disabled=session_state.running,
                 use_container_width=True,
-                help="Запрашивает у API общее количество записей по каждому из 8 округов",
+                key="refresh_source_btn",
             ):
                 with st.spinner("Запрашиваю данные источника..."):
                     try:
@@ -739,7 +771,9 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
-                st.caption(f"{len(records):,} записей готово к экспорту".replace(",", " "))
+                st.caption(
+                    f"{len(records):,} записей готово к экспорту".replace(",", " ")
+                )
             else:
                 st.markdown(
                     "<p style='font-size:13px;color:#6B7280;'>Нет данных для экспорта</p>",
@@ -752,11 +786,14 @@ def main():
             )
 
             if st.button(
-                "↑  Загрузить обновления",
+                "⬆️ Закачать обновления",
                 disabled=session_state.running,
                 use_container_width=True,
+                key="update_btn",
             ):
-                run_script("main_update.py")
+                cfg = load_config()
+                token = cfg.get("fgis_token", "")
+                run_script("main_update.py", f"--token={token}" if token else "")
 
             st.markdown(
                 "<p style='font-size:11px;color:#6B7280;margin:4px 0 0;'>Только новые записи</p>"
@@ -764,14 +801,47 @@ def main():
                 unsafe_allow_html=True,
             )
 
-        if session_state.log_messages:
+    # Logs tab - now tab4
+    with tab4:
+        st.markdown("### Логи")
+
+        if session_state.running:
+            # Animated loading indicator
             st.markdown(
-                f"<p style='font-size:11px;font-weight:600;letter-spacing:0.08em;color:#6B7280;"
-                f"text-transform:uppercase;margin:24px 0 8px;'>{ICON['terminal']}Журнал операций</p>",
+                """
+            <div style="text-align:center;padding:40px;">
+                <div class="loader"></div>
+                <p style="color:#10B981;margin-top:20px;font-size:16px;">Загрузка данных...</p>
+            </div>
+            <style>
+            .loader {
+                border: 4px solid rgba(16,185,129,0.1);
+                border-left-color: #10B981;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                animation: spin 1s linear infinite;
+                margin: 0 auto;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            </style>
+            """,
                 unsafe_allow_html=True,
             )
-            log_text = "".join(session_state.log_messages[-100:])
-            st.text_area("", log_text, height=260, key="log_area", label_visibility="collapsed")
+
+        if session_state.log_messages:
+            log_text = "".join(session_state.log_messages[-200:])
+            st.text_area("Журнал", log_text, height=500, key="log_area")
+        else:
+            st.info("Нажмите 'Полный парсинг' или 'Закачать обновления' для запуска")
+
+        if session_state.running:
+            if st.button("✕ Остановить", use_container_width=True, key="stop_btn"):
+                stop_script()
+                st.rerun()
 
     with tab2:
         st.markdown(
@@ -832,7 +902,7 @@ def main():
 
         col_save, col_reset = st.columns(2)
 
-        if col_save.button("✓  Сохранить"):
+        if col_save.button("✓  Сохранить", key="save_config_btn"):
             config["timeout"] = timeout_val
             config["delay"] = delay_val
             config["retry_max"] = retry_val
@@ -840,7 +910,7 @@ def main():
             save_config(config)
             st.success("Сохранено!")
 
-        if col_reset.button("↺  Сбросить"):
+        if col_reset.button("↺  Сбросить", key="reset_config_btn"):
             save_config(DEFAULT_CONFIG)
             st.success("Сброшено к значениям по умолчанию!")
             st.rerun()
@@ -876,7 +946,7 @@ def main():
 
         col_ui_save, col_ui_reset = st.columns(2)
 
-        if col_ui_save.button("✓  Сохранить"):
+        if col_ui_save.button("✓  Сохранить", key="save_ui_btn"):
             ui_config["primary_color"] = primary_color
             ui_config["progress_color"] = progress_color
             ui_config["text_color"] = text_color
@@ -885,7 +955,7 @@ def main():
             st.success("Сохранено!")
             st.rerun()
 
-        if col_ui_reset.button("↺  Сбросить"):
+        if col_ui_reset.button("↺  Сбросить", key="reset_ui_btn"):
             save_ui_config(DEFAULT_UI_CONFIG)
             st.success("Сброшено!")
             st.rerun()
