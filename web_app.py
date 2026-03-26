@@ -887,7 +887,19 @@ def main():
 
             m1, m2, m3 = st.columns(3)
             m1.metric("Всего записей", f"{stats['total']:,}".replace(",", " "))
-            m2.metric("Федеральных округов", len(stats["districts"]))
+
+            downloaded_total = sum(
+                int(d.get("downloaded") or 0) for d in stats["districts"]
+            )
+            source_total = sum(
+                max(int(d.get("total_source") or 0), int(d.get("downloaded") or 0))
+                for d in stats["districts"]
+            )
+            fill_percent = (
+                (downloaded_total / source_total * 100) if source_total > 0 else 0.0
+            )
+            m2.metric("Заполнение БД", f"{fill_percent:.1f}%")
+
             active_count = stats["statuses"].get("Действует", 0) + stats[
                 "statuses"
             ].get("Действующий", 0)
