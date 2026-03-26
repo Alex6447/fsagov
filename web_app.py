@@ -1,8 +1,8 @@
 import json
 import os
+import re
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "fgis_token": BEARER_TOKEN,
 }
 UI_CONFIG_FILE = Path("ui_config.json")
+RUN_STATE_FILE = Path("logs/run_state.json")
 DEFAULT_UI_CONFIG = {
     "primary_color": "#10B981",
     "progress_color": "#34D399",
@@ -49,6 +50,10 @@ if "progress" not in session_state:
     session_state.progress = 0
 if "process" not in session_state:
     session_state.process = None
+if "run_started_at" not in session_state:
+    session_state.run_started_at = None
+if "run_command" not in session_state:
+    session_state.run_command = ""
 
 
 def load_config() -> dict:
@@ -73,6 +78,70 @@ def load_ui_config() -> dict:
 def save_ui_config(config: dict):
     with open(UI_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def _read_run_state() -> dict | None:
+    if not RUN_STATE_FILE.exists():
+        return None
+    try:
+        with open(RUN_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_run_state(state: dict):
+    RUN_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(RUN_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def _clear_run_state():
+    if RUN_STATE_FILE.exists():
+        RUN_STATE_FILE.unlink()
+
+
+def _is_pid_running(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _sync_runtime_state():
+    state = _read_run_state()
+    if not state:
+        session_state.running = False
+        return
+
+    pid = int(state.get("pid") or 0)
+    if _is_pid_running(pid):
+        session_state.running = True
+        session_state.run_started_at = state.get("started_at")
+        session_state.run_command = state.get("command", "")
+    else:
+        _clear_run_state()
+        session_state.running = False
+        session_state.run_started_at = None
+
+
+def _get_active_run_info() -> dict | None:
+    state = _read_run_state()
+    if not state:
+        return None
+
+    pid = int(state.get("pid") or 0)
+    if not _is_pid_running(pid):
+        return None
+
+    return {
+        "pid": pid,
+        "command": state.get("command", ""),
+        "started_at": state.get("started_at"),
+    }
 
 
 def _svg(path: str, size: int = 16) -> str:
@@ -270,16 +339,45 @@ def apply_ui_theme(ui_config: dict):
             letter-spacing: -0.02em;
         }}
 
-        /* ── Progress bar ── */
-        .stProgress > div > div > div > div {{
-            background: linear-gradient(90deg, {primary}, {progress});
-            border-radius: 99px;
-            box-shadow: 0 0 10px rgba(16,185,129,0.4);
+        /* ── Run progress (custom single bar) ── */
+        .run-progress-label {{
+            color: {text};
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            line-height: 1.2;
         }}
-        .stProgress > div > div {{
-            background: rgba(16,185,129,0.1);
-            border-radius: 99px;
-            height: 8px !important;
+        .run-progress-track {{
+            height: 12px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.10);
+            overflow: hidden;
+            margin-bottom: 12px;
+        }}
+        .run-progress-fill {{
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, {primary}, {progress});
+        }}
+        .run-active-card {{
+            background: rgba(16,185,129,0.12);
+            color: {primary};
+            border: 1px solid rgba(16,185,129,0.35);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }}
+        .run-inactive-card {{
+            background: rgba(239,68,68,0.12);
+            color: #EF4444;
+            border: 1px solid rgba(239,68,68,0.35);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
         }}
 
         /* ── Select boxes ── */
@@ -502,52 +600,225 @@ def get_districts_and_regions() -> tuple:
     return districts, district_map
 
 
-def run_script(script_name: str, *args):
-    def target():
-        import os
+def _build_run_command(script_name: str, *args) -> list[str]:
+    clean_args = [arg for arg in args if arg]
+    return ["uv", "run", "python", "-u", script_name, *clean_args]
 
-        cwd = os.getcwd()
-        # Use uv run
-        cmd = f"uv run python {script_name} {' '.join(args)}"
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            shell=True,
+
+def _get_live_status() -> str:
+    log_messages = _read_log_tail(limit=30)
+    for line in reversed(log_messages):
+        text = line.strip()
+        if text:
+            return text
+
+    return "Процесс запущен, ожидаем появление записей в логе..."
+
+
+def _count_region_records(region_name: str) -> int | None:
+    if not region_name:
+        return None
+
+    db = Database()
+    try:
+        db.connect()
+        cursor = db.conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM showcases WHERE region = ?", (region_name,)
         )
-        session_state.process = proc
+        row = cursor.fetchone()
+        return int(row[0] if row else 0)
+    except Exception:
+        return None
+    finally:
+        db.close()
 
-        for line in proc.stdout:
-            if not session_state.running:
-                break
-            session_state.log_messages.append(line)
-            if len(session_state.log_messages) > 500:
-                session_state.log_messages.pop(0)
 
-        proc.wait()
-        session_state.running = False
-        session_state.process = None
-        session_state.progress = 100
+def _get_district_progress(
+    district_name: str,
+) -> tuple[int | None, int | None, float | None]:
+    if not district_name or district_name == "—":
+        return None, None, None
+
+    db = Database()
+    try:
+        db.connect()
+        cursor = db.conn.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM showcases WHERE federal_district = ?",
+            (district_name,),
+        )
+        downloaded_row = cursor.fetchone()
+        downloaded = int(downloaded_row[0] if downloaded_row else 0)
+
+        cursor.execute(
+            "SELECT total_source FROM nsi_districts WHERE name = ?", (district_name,)
+        )
+        total_row = cursor.fetchone()
+        total_source = (
+            int(total_row[0] or 0) if total_row and total_row[0] is not None else 0
+        )
+
+        if total_source > 0:
+            ratio = max(0.0, min(1.0, downloaded / total_source))
+        else:
+            ratio = None
+
+        return downloaded, total_source, ratio
+    except Exception:
+        return None, None, None
+    finally:
+        db.close()
+
+
+def _region_to_district_map() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    districts, district_map = get_districts_and_regions()
+    for district in districts:
+        district_name = district.get("name", "")
+        for region_name in district_map.get(district_name, []):
+            mapping[region_name] = district_name
+    return mapping
+
+
+def _get_live_parse_snapshot() -> tuple[str, float]:
+    lines = _read_log_tail(limit=1200)
+    if not lines:
+        return "— - — - всего записей: — - записано: —", 0.02
+
+    region_name = None
+    total_records = None
+
+    pattern_check = re.compile(r"=== CHECK: region=(.+?) -> pages=(\d+) ===")
+    pattern_update_total = re.compile(r"Region '(.+?)': total=(\d+)")
+    pattern_response_total = re.compile(
+        r"RESPONSE: total=(\d+), items=(\d+), pages=(\d+)"
+    )
+
+    for line in reversed(lines):
+        if region_name is None:
+            m = pattern_check.search(line)
+            if m:
+                region_name = m.group(1).strip()
+
+        if region_name is None:
+            m = pattern_update_total.search(line)
+            if m:
+                region_name = m.group(1).strip()
+                total_records = int(m.group(2))
+
+        if total_records is None:
+            m = pattern_response_total.search(line)
+            if m:
+                total_records = int(m.group(1))
+
+        if region_name and total_records is not None:
+            break
+
+    district_name = "—"
+    if region_name:
+        district_name = _region_to_district_map().get(region_name, "—")
+
+    inserted = _count_region_records(region_name) if region_name else None
+
+    total_text = (
+        f"{total_records:,}".replace(",", " ") if total_records is not None else "—"
+    )
+    inserted_text = f"{inserted:,}".replace(",", " ") if inserted is not None else "—"
+    region_text = region_name or "—"
+
+    _, _, district_ratio = _get_district_progress(district_name)
+    progress = district_ratio if district_ratio is not None else 0.02
+
+    text = (
+        f"{district_name} - {region_text} - всего записей: {total_text} - "
+        f"записано: {inserted_text}"
+    )
+    return text, progress
+
+
+def _read_log_tail(limit: int = 200) -> list[str]:
+    log_path = Path("logs/log.log")
+    if not log_path.exists():
+        return []
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return lines[-limit:]
+    except Exception:
+        return []
+
+
+def run_script(script_name: str, *args):
+    active_state = _read_run_state()
+    if active_state and _is_pid_running(int(active_state.get("pid") or 0)):
+        pid = active_state.get("pid")
+        return False, f"Уже выполняется процесс (PID {pid}). Сначала остановите его."
+
+    cwd = os.getcwd()
+    cmd = _build_run_command(script_name, *args)
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        shell=False,
+        creationflags=creationflags,
+    )
+
+    started_at = time.time()
+    command_text = " ".join(cmd)
+    _write_run_state(
+        {
+            "pid": proc.pid,
+            "script": script_name,
+            "command": command_text,
+            "started_at": started_at,
+        }
+    )
 
     session_state.running = True
-    session_state.log_messages = []
+    session_state.run_started_at = started_at
+    session_state.run_command = command_text
+    session_state.log_messages = [f"Запущено: {session_state.run_command}\n"]
     session_state.progress = 0
-    session_state.process = None
-    thread = threading.Thread(target=target)
-    thread.start()
+    session_state.process = proc
+    return True, f"Запущено (PID {proc.pid})"
 
 
 def stop_script():
-    if session_state.process:
-        session_state.process.terminate()
+    state = _read_run_state()
+    if not state:
+        session_state.running = False
+        session_state.process = None
+        session_state.run_started_at = None
+        return "Активный процесс не найден"
+
+    pid = int(state.get("pid") or 0)
+    if pid and _is_pid_running(pid):
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            shell=False,
+        )
+
+    _clear_run_state()
+    session_state.log_messages.append(f"Остановка: процесс PID {pid} остановлен.\n")
     session_state.running = False
     session_state.process = None
+    session_state.run_started_at = None
+    return f"Процесс PID {pid} остановлен"
 
 
 def main():
+    _sync_runtime_state()
+
     ui_config = load_ui_config()
     apply_ui_theme(ui_config)
 
@@ -617,7 +888,7 @@ def main():
                     .mark_bar(
                         filled=False,
                         stroke="#10B981",
-                        strokeWidth=1.5,
+                        strokeWidth=1,
                         strokeOpacity=0.45,
                         cornerRadiusTopRight=3,
                         cornerRadiusBottomRight=3,
@@ -677,29 +948,75 @@ def main():
                         "Данные источника не загружены — нажмите «⟳ Обновить данные источника»"
                     )
 
-        with col2:
-            st.markdown(
-                f"<div style='background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);"
-                f"border-radius:16px;padding:20px 18px;'>"
-                f"<p style='font-size:11px;font-weight:600;letter-spacing:0.08em;color:#6B7280;"
-                f"text-transform:uppercase;margin-bottom:16px;'>{ICON['activity']}Управление</p>",
-                unsafe_allow_html=True,
-            )
-
             if session_state.running:
-                st.info("⏳ Идёт загрузка... Смотрите вкладку 'Логи'")
+                elapsed = 0
+                if session_state.run_started_at:
+                    elapsed = int(time.time() - session_state.run_started_at)
+                elapsed_label = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+                snapshot_text, snapshot_progress = _get_live_parse_snapshot()
+                fill_percent = max(2, min(100, int(snapshot_progress * 100)))
+
+                st.markdown(
+                    (
+                        f"<div class='run-progress-label'>Выполняется парсинг... {elapsed_label}</div>"
+                        f"<div class='run-progress-track'><div class='run-progress-fill' style='width:{fill_percent}%;'></div></div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.caption(snapshot_text)
+
+        with col2:
+            active_run = _get_active_run_info()
+            if active_run:
+                st.markdown(
+                    f"<div class='run-active-card'>Активный запуск: PID {active_run['pid']}</div>",
+                    unsafe_allow_html=True,
+                )
+                attach_col, stop_col = st.columns(2)
+                if attach_col.button(
+                    "Подцепиться",
+                    use_container_width=True,
+                    key="attach_run_btn",
+                ):
+                    session_state.running = True
+                    session_state.run_started_at = active_run.get("started_at")
+                    session_state.run_command = active_run.get("command", "")
+                    session_state.log_messages = [
+                        f"Подцеплено к процессу PID {active_run['pid']}\n"
+                    ]
+                    st.rerun()
+
+                if stop_col.button(
+                    "Остановить PID",
+                    use_container_width=True,
+                    key="stop_run_from_status_btn",
+                ):
+                    stop_script()
+                    st.rerun()
             else:
+                st.markdown(
+                    "<div class='run-inactive-card'>Нет активного фонового процесса</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if not session_state.running:
+                st.markdown(
+                    "<p style='font-size:11px;color:#6B7280;margin:4px 0 8px;'>Полная загрузка всех данных</p>",
+                    unsafe_allow_html=True,
+                )
+
                 if st.button(
-                    "🔄 Полный парсинг", use_container_width=True, key="full_parse_btn"
+                    "Полный парсинг", use_container_width=True, key="full_parse_btn"
                 ):
                     cfg = load_config()
                     token = cfg.get("fgis_token", "")
-                    run_script("main.py", f"--token={token}" if token else "")
-
-            st.markdown(
-                "<p style='font-size:11px;color:#6B7280;margin:4px 0 8px;'>Полная загрузка всех данных</p>",
-                unsafe_allow_html=True,
-            )
+                    started, message = run_script(
+                        "main.py", f"--token={token}" if token else ""
+                    )
+                    if started:
+                        st.rerun()
+                    else:
+                        st.warning(message)
 
             if st.button(
                 "⟳  Обновить данные источника",
@@ -714,11 +1031,6 @@ def main():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Ошибка: {e}")
-
-            st.markdown(
-                "<p style='font-size:11px;color:#6B7280;margin:4px 0 16px;'>Счётчики записей на сайте</p>",
-                unsafe_allow_html=True,
-            )
 
             st.markdown(
                 "<hr style='border-color:rgba(255,255,255,0.06);margin:12px 0;'>",
@@ -793,51 +1105,37 @@ def main():
             ):
                 cfg = load_config()
                 token = cfg.get("fgis_token", "")
-                run_script("main_update.py", f"--token={token}" if token else "")
+                started, message = run_script(
+                    "main_update.py", f"--token={token}" if token else ""
+                )
+                if started:
+                    st.rerun()
+                else:
+                    st.warning(message)
 
             st.markdown(
-                "<p style='font-size:11px;color:#6B7280;margin:4px 0 0;'>Только новые записи</p>"
-                "</div>",
+                "<p style='font-size:11px;color:#6B7280;margin:4px 0 0;'>Только новые записи</p>",
                 unsafe_allow_html=True,
             )
 
-    # Logs tab - now tab4
+    # Logs tab
     with tab4:
         st.markdown("### Логи")
 
+        # Auto-refresh during parsing
         if session_state.running:
-            # Animated loading indicator
-            st.markdown(
-                """
-            <div style="text-align:center;padding:40px;">
-                <div class="loader"></div>
-                <p style="color:#10B981;margin-top:20px;font-size:16px;">Загрузка данных...</p>
-            </div>
-            <style>
-            .loader {
-                border: 4px solid rgba(16,185,129,0.1);
-                border-left-color: #10B981;
-                border-radius: 50%;
-                width: 50px;
-                height: 50px;
-                animation: spin 1s linear infinite;
-                margin: 0 auto;
-            }
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-            </style>
-            """,
-                unsafe_allow_html=True,
-            )
+            time.sleep(2)
+            st.rerun()
 
-        if session_state.log_messages:
-            log_text = "".join(session_state.log_messages[-200:])
-            st.text_area("Журнал", log_text, height=500, key="log_area")
-        else:
-            st.info("Нажмите 'Полный парсинг' или 'Закачать обновления' для запуска")
+        # Show logs
+        log_messages = _read_log_tail(limit=300)
+        if not log_messages:
+            log_messages = session_state.log_messages[-200:]
 
+        log_text = "".join(log_messages)
+        st.text_area("Журнал", log_text, height=500, key="log_area")
+
+        # Stop button
         if session_state.running:
             if st.button("✕ Остановить", use_container_width=True, key="stop_btn"):
                 stop_script()

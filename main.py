@@ -94,6 +94,51 @@ def fetch_and_insert(
     return fetched, inserted
 
 
+def sort_districts_by_progress(db: Database, districts: list[dict]) -> list[dict]:
+    """Сортирует округа по возрастанию процента загрузки."""
+    downloaded_map: dict[str, int] = {}
+
+    try:
+        db.connect()
+        cursor = db.conn.cursor()
+        cursor.execute(
+            "SELECT federal_district, COUNT(*) as cnt FROM showcases GROUP BY federal_district"
+        )
+        for row in cursor.fetchall():
+            name = (row[0] or "").strip()
+            if name:
+                downloaded_map[name] = int(row[1] or 0)
+    finally:
+        db.close()
+
+    def progress_key(d: dict):
+        name = (d.get("name") or "").strip()
+        downloaded = downloaded_map.get(name, 0)
+        total_source = int(d.get("total_source") or 0)
+
+        if total_source > 0:
+            ratio = downloaded / total_source
+        else:
+            ratio = 0.0 if downloaded == 0 else 1.0
+
+        return (ratio, downloaded, name)
+
+    sorted_districts = sorted(districts, key=progress_key)
+
+    for district in sorted_districts:
+        name = (district.get("name") or "").strip()
+        downloaded = downloaded_map.get(name, 0)
+        total_source = int(district.get("total_source") or 0)
+        ratio_text = (
+            f"{(downloaded / total_source) * 100:.1f}%" if total_source > 0 else "n/a"
+        )
+        logger.info(
+            f"DISTRICT ORDER: {name} -> progress={ratio_text} ({downloaded}/{total_source})"
+        )
+
+    return sorted_districts
+
+
 def parse_with_filters(
     client: RosreestrAPIClient,
     db: Database,
@@ -133,6 +178,10 @@ def parse_with_filters(
             logger.warning("No districts available")
             return 0, 0
 
+        districts = sort_districts_by_progress(db, districts)
+        if districts:
+            logger.info(f"Start district: {districts[0].get('name', 'unknown')}")
+
         # Собираем все регионы для всех округов (один раз)
         for district in districts:
             regions = db.get_regions(district["id"])
@@ -143,12 +192,11 @@ def parse_with_filters(
                 # Небольшая пауза между запросами округов
                 time.sleep(1)
 
-        # Теперь перебираем все регионы
-        all_regions = db.get_all_regions() if hasattr(db, "get_all_regions") else []
-        if not all_regions:
-            for district in districts:
-                regions = db.get_regions(district["id"])
-                all_regions.extend(regions)
+        # Теперь перебираем все регионы в порядке округов с минимальным прогрессом
+        all_regions = []
+        for district in districts:
+            regions = db.get_regions(district["id"])
+            all_regions.extend(regions)
 
         logger.info(f"Total regions: {len(all_regions)}")
 
